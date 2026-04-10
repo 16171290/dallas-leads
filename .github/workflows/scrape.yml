@@ -2,8 +2,8 @@ name: Dallas County Lead Scraper
 
 on:
   schedule:
-    - cron: "0 7 * * *"   # 2:00 AM CDT / 1:00 AM CST daily
-  workflow_dispatch:        # manual trigger from Actions tab
+    - cron: "0 7 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -33,6 +33,10 @@ jobs:
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
+
+      - name: Test Decodo proxy
+        run: curl -x http://${{ secrets.DECODO_USER }}:${{ secrets.DECODO_PASS }}@gate.decodo.com:7000 https://ip.decodo.com
+        continue-on-error: true
 
       - name: Run scraper
         run: python scraper/fetch.py
