@@ -54,8 +54,8 @@ log = logging.getLogger("dallas_scraper")
 LOOKBACK_DAYS = 7
 
 # The actual records search engine used by Dallas County Clerk
-SEARCH_BASE = "https://dcrecords.dallascounty.org"
-SEARCH_URL  = f"{SEARCH_BASE}/search/index.php"
+SEARCH_BASE = "https://dallas.tx.publicsearch.us"
+SEARCH_URL  = f"{SEARCH_BASE}/search/advanced"
 
 # Dallas CAD bulk data page
 CAD_PAGE = "https://www.dallascad.org/DataProducts.aspx"
@@ -352,7 +352,7 @@ class ParcelLookup:
 
 class ClerkScraper:
     """
-    Uses Playwright (async Chromium) to search dcrecords.dallascounty.org
+    Uses Playwright (async Chromium) to search dallas.tx.publicsearch.us
     for each document type code over the configured date range.
 
     The portal is a legacy ASP.NET application.  Field names observed:
@@ -781,7 +781,7 @@ def write_ghl_csv(records: list[dict], path: Path):
                 "Amount/Debt Owed":       r.get("amount") or "",
                 "Seller Score":           r.get("score", 0),
                 "Motivated Seller Flags": "; ".join(r.get("flags", [])),
-                "Source":                 "Dallas County Clerk (dcrecords.dallascounty.org)",
+                "Source":                 "Dallas County Clerk (dallas.tx.publicsearch.us)",
                 "Public Records URL":     r.get("clerk_url", ""),
             })
     log.info(f"GHL CSV → {path}  ({len(records)} rows)")
@@ -846,7 +846,7 @@ async def main():
     # ── 6. Build JSON payload ───────────────────────────────────────────────
     payload = {
         "fetched_at": now.isoformat(),
-        "source":     "Dallas County Clerk – dcrecords.dallascounty.org",
+        "source":     "Dallas County Clerk – dallas.tx.publicsearch.us",
         "date_range": {
             "start": start_dt.date().isoformat(),
             "end":   end_dt.date().isoformat(),
