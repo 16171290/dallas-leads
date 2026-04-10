@@ -48,12 +48,11 @@ log = logging.getLogger("dallas_scraper")
 DECODO_USER = os.environ.get("DECODO_USER", "")
 DECODO_PASS = os.environ.get("DECODO_PASS", "")
 DECODO_HOST = "gate.decodo.com"
-DECODO_PORT = 7000
+DECODO_PORT = 10000
 
 # Proxy URL formats
 PROXY_URL_AUTH = f"http://{DECODO_USER}:{DECODO_PASS}@{DECODO_HOST}:{DECODO_PORT}"
 PROXY_URL_BARE = f"http://{DECODO_HOST}:{DECODO_PORT}"
-PROXY_URL_AUTH = f"http://{DECODO_USER}:{DECODO_PASS}@{DECODO_HOST}:{DECODO_PORT}"
 
 def proxy_enabled() -> bool:
     return bool(DECODO_USER and DECODO_PASS)
@@ -432,7 +431,7 @@ class ClerkScraper:
             # ── Load home page to set session cookies ─────────────────────
             log.info("Loading portal home page …")
             try:
-                await page.goto(PORTAL_BASE, timeout=90_000,
+                await page.goto(PORTAL_BASE, timeout=40_000,
                                 wait_until="domcontentloaded")
                 await page.wait_for_load_state("networkidle", timeout=20_000)
                 # Dismiss any terms/cookie dialog
@@ -476,15 +475,8 @@ class ClerkScraper:
                             await page.goto(url, timeout=40_000,
                                             wait_until="domcontentloaded")
                             await page.wait_for_load_state("networkidle",
-                                                   timeout=25_000)
-                    await asyncio.sleep(5)  # let JS finish rendering
-                    # Wait for results to actually appear
-                    try:
-                        await page.wait_for_selector(
-                            'table, [class*="result"], [class*="document"]',
-                            timeout=10_000)
-                    except Exception:
-                        pass
+                                                           timeout=25_000)
+                            await asyncio.sleep(5)  # let JS finish rendering
                             loaded = True
                             break
                         except PWTimeout:
