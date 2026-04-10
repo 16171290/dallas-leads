@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: scraper/requirements.txt
+        
 
       # ── 3. Install Python dependencies ───────────────────────────────────
       - name: Install dependencies
