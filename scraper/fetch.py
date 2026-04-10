@@ -1,8 +1,11 @@
 """
 Dallas County, Texas — Motivated Seller Lead Scraper
 =====================================================
-Target portal : https://dallas.tx.publicsearch.us  (Neumo PublicSearch platform)
-Parcel data   : https://www.dallascad.org/DataProducts.aspx
+Target portal : https://dallas.tx.publicsearch.us  (Neumo PublicSearch — React SPA)
+Strategy      : Intercept the portal's own background API/JSON calls using
+                Playwright's network request interception.  The SPA fetches
+                results from a REST endpoint; we capture that JSON directly.
+Parcel data   : https://www.dallascad.org/DataProducts.aspx (bulk DBF)
 Look-back     : Last 7 days
 """
 
@@ -144,6 +147,80 @@ def blank_record(code: str) -> dict:
     }
 
 
+def normalize_api_record(item: dict, code: str) -> Optional[dict]:
+    """Convert one item from the portal's JSON API into our record format."""
+    try:
+        cat, lbl = DOC_TYPE_MAP.get(code, (code, code))
+
+        # Doc number — various field names seen in publicsearch APIs
+        doc_num = str(
+            item.get("instrumentNumber") or
+            item.get("docNumber") or
+            item.get("documentNumber") or
+            item.get("id") or ""
+        ).strip()
+        if not doc_num:
+            return None
+
+        # Filed date
+        filed_raw = str(
+            item.get("recordedDate") or
+            item.get("fileDate") or
+            item.get("instrumentDate") or
+            item.get("date") or ""
+        )
+        dt        = parse_date(filed_raw)
+        filed_iso = dt.strftime("%Y-%m-%d") if dt else filed_raw
+
+        # Parties
+        # grantor / grantors list
+        grantor_list = item.get("grantors") or item.get("grantor") or []
+        if isinstance(grantor_list, list):
+            owner = "; ".join(
+                p.get("name", "") if isinstance(p, dict) else str(p)
+                for p in grantor_list
+            ).strip()
+        else:
+            owner = str(grantor_list).strip()
+
+        grantee_list = item.get("grantees") or item.get("grantee") or []
+        if isinstance(grantee_list, list):
+            grantee = "; ".join(
+                p.get("name", "") if isinstance(p, dict) else str(p)
+                for p in grantee_list
+            ).strip()
+        else:
+            grantee = str(grantee_list).strip()
+
+        # Amount
+        amount = parse_amount(
+            item.get("consideration") or item.get("amount") or
+            item.get("docAmount") or ""
+        )
+
+        # Legal description
+        legal = str(item.get("legalDescription") or item.get("legal") or "").strip()
+
+        # Direct document URL
+        doc_id    = item.get("id") or doc_num
+        clerk_url = f"{PORTAL_BASE}/doc/{doc_id}" if doc_id else ""
+
+        r = blank_record(code)
+        r.update({
+            "doc_num":   doc_num,
+            "filed":     filed_iso,
+            "owner":     owner,
+            "grantee":   grantee,
+            "amount":    amount,
+            "legal":     legal,
+            "clerk_url": clerk_url,
+        })
+        return r
+    except Exception as exc:
+        log.debug(f"normalize_api_record error: {exc}")
+        return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dallas CAD Parcel Lookup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -277,27 +354,31 @@ class ParcelLookup:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dallas County Clerk Scraper — dallas.tx.publicsearch.us
+# Dallas County Clerk Scraper — Network Interception Strategy
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ClerkScraper:
     """
-    Targets the Neumo PublicSearch portal used by Dallas County Clerk.
-    Navigates directly to the results URL with all params in the query string:
+    Uses Playwright to load the PublicSearch SPA and intercepts the
+    background API/JSON calls the app makes to fetch search results.
 
-      https://dallas.tx.publicsearch.us/results/document/search/advanced
-        ?category=OPR&dateType=R&fromDate=MM/DD/YYYY&toDate=MM/DD/YYYY
-        &docTypes=LP&page=1&perPage=50
+    The Neumo platform typically calls one of these endpoints:
+      /api/search   (GET with query params)
+      /api/documents/search  (POST with JSON body)
+      /results/...  (navigated URL that triggers an XHR fetch)
+
+    We capture ALL JSON responses from the portal domain and parse them.
     """
 
-    RESULTS_URL = f"{PORTAL_BASE}/results/document/search/advanced"
-    PER_PAGE    = 50
-    MAX_PAGES   = 40
+    PER_PAGE  = 50
+    MAX_PAGES = 40
 
     def __init__(self, start: datetime, end: datetime):
         self.start   = start
         self.end     = end
         self.records: list[dict] = []
+        # Captured API responses keyed by (code, page)
+        self._api_cache: dict[str, list[dict]] = {}
 
     async def run(self):
         async with async_playwright() as pw:
@@ -312,96 +393,137 @@ class ClerkScraper:
                 ),
                 viewport={"width": 1280, "height": 900},
             )
-            page = await ctx.new_page()
 
-            # Load home page once to set cookies / accept terms
+            # ── Intercept all JSON responses ──────────────────────────────
+            captured: list[dict] = []
+
+            async def handle_response(response):
+                try:
+                    url = response.url
+                    ct  = response.headers.get("content-type", "")
+                    if "json" in ct and PORTAL_BASE in url:
+                        body = await response.json()
+                        captured.append({"url": url, "body": body})
+                        log.debug(f"Captured JSON from: {url}")
+                except Exception:
+                    pass
+
+            page = await ctx.new_page()
+            page.on("response", handle_response)
+
+            # Load home page first to get cookies
             log.info("Loading portal home page …")
             try:
                 await page.goto(PORTAL_BASE, timeout=30_000,
                                 wait_until="domcontentloaded")
                 await page.wait_for_load_state("networkidle", timeout=15_000)
-                for btn_text in ["Accept", "I Agree", "Continue", "OK", "Close"]:
+                for btn in ["Accept", "I Agree", "Continue", "OK", "Close"]:
                     try:
                         await page.click(
-                            f'button:has-text("{btn_text}"), '
-                            f'a:has-text("{btn_text}")',
-                            timeout=3_000,
-                        )
-                        log.info(f"Dismissed dialog: {btn_text}")
+                            f'button:has-text("{btn}"), a:has-text("{btn}")',
+                            timeout=3_000)
                         break
                     except Exception:
                         pass
             except Exception as e:
                 log.warning(f"Home page warning: {e}")
 
+            from_str = self.start.strftime("%m/%d/%Y")
+            to_str   = self.end.strftime("%m/%d/%Y")
+
             for code in ALL_CODES:
                 log.info(f"Searching: {code}")
-                try:
-                    recs = await self._search_code(page, code)
-                    log.info(f"  → {len(recs)} records")
-                    self.records.extend(recs)
-                except Exception as exc:
-                    log.error(f"  Error on {code}: {exc}")
-                    traceback.print_exc()
+                code_records: list[dict] = []
+                captured.clear()
+
+                for page_num in range(1, self.MAX_PAGES + 1):
+                    captured.clear()
+                    params = {
+                        "category": "OPR",
+                        "dateType": "R",
+                        "fromDate": from_str,
+                        "toDate":   to_str,
+                        "docTypes": code,
+                        "page":     page_num,
+                        "perPage":  self.PER_PAGE,
+                    }
+                    url = f"{PORTAL_BASE}/results/document/search/advanced?{urlencode(params)}"
+
+                    try:
+                        await page.goto(url, timeout=30_000,
+                                        wait_until="domcontentloaded")
+                        # Wait for network to settle so API calls complete
+                        await page.wait_for_load_state("networkidle", timeout=20_000)
+                        # Extra wait for JS rendering
+                        await asyncio.sleep(2)
+                    except Exception as e:
+                        log.warning(f"  Page load error p{page_num}: {e}")
+                        break
+
+                    # ── Parse intercepted JSON responses ──────────────────
+                    page_items = []
+                    for cap in captured:
+                        items = self._extract_items_from_json(cap["body"])
+                        page_items.extend(items)
+
+                    if not page_items:
+                        # Fallback: try to parse rendered HTML
+                        html       = await page.content()
+                        page_items = self._parse_html_fallback(html, code)
+
+                    # Normalize to our record format
+                    for item in page_items:
+                        if isinstance(item, dict) and "doc_num" in item:
+                            # Already normalized (from HTML parser)
+                            code_records.append(item)
+                        else:
+                            r = normalize_api_record(item, code)
+                            if r:
+                                code_records.append(r)
+
+                    log.debug(f"  p{page_num}: {len(page_items)} items")
+
+                    # Stop paginating if we got less than a full page
+                    if len(page_items) < self.PER_PAGE:
+                        break
+
+                log.info(f"  → {len(code_records)} records")
+                self.records.extend(code_records)
                 await asyncio.sleep(1.0)
 
             await browser.close()
 
         log.info(f"Playwright scrape complete – {len(self.records)} raw records")
 
-    async def _search_code(self, page, code: str) -> list[dict]:
-        records  = []
-        from_str = self.start.strftime("%m/%d/%Y")
-        to_str   = self.end.strftime("%m/%d/%Y")
+    def _extract_items_from_json(self, body) -> list:
+        """
+        Extract document items from whatever JSON structure the portal returns.
+        Handles: list, {results:[]}, {data:[]}, {documents:[]}, {hits:[]}, etc.
+        """
+        if isinstance(body, list):
+            return body
+        if isinstance(body, dict):
+            for key in ("results", "data", "documents", "hits", "records",
+                        "items", "content", "rows"):
+                val = body.get(key)
+                if isinstance(val, list) and val:
+                    return val
+            # Nested under "search" or similar
+            for key in ("search", "response", "payload"):
+                val = body.get(key)
+                if isinstance(val, dict):
+                    for inner in ("results", "data", "documents", "hits"):
+                        v2 = val.get(inner)
+                        if isinstance(v2, list) and v2:
+                            return v2
+        return []
 
-        for page_num in range(1, self.MAX_PAGES + 1):
-            params = {
-                "category": "OPR",
-                "dateType": "R",
-                "fromDate": from_str,
-                "toDate":   to_str,
-                "docTypes": code,
-                "page":     page_num,
-                "perPage":  self.PER_PAGE,
-            }
-            url = f"{self.RESULTS_URL}?{urlencode(params)}"
+    def _parse_html_fallback(self, html: str, code: str) -> list[dict]:
+        """Parse rendered HTML results if JSON interception yielded nothing."""
+        records = []
+        soup    = BeautifulSoup(html, "lxml")
 
-            loaded = False
-            for attempt in range(3):
-                try:
-                    await page.goto(url, timeout=30_000,
-                                    wait_until="domcontentloaded")
-                    await page.wait_for_load_state("networkidle", timeout=20_000)
-                    loaded = True
-                    break
-                except PWTimeout:
-                    log.warning(f"  Timeout p{page_num} attempt {attempt+1}")
-                    await asyncio.sleep(3)
-
-            if not loaded:
-                break
-
-            html      = await page.content()
-            page_recs = self._parse_page(html, code, url)
-            records.extend(page_recs)
-
-            if len(page_recs) < self.PER_PAGE or self._is_empty_page(html):
-                break
-
-        return records
-
-    def _is_empty_page(self, html: str) -> bool:
-        text = BeautifulSoup(html, "lxml").get_text(" ", strip=True).lower()
-        return any(p in text for p in [
-            "no results", "no records found", "0 results",
-            "no documents found", "no matching",
-        ])
-
-    def _parse_page(self, html: str, code: str, url: str) -> list[dict]:
-        records  = []
-        soup     = BeautifulSoup(html, "lxml")
-
-        # ── Try table layout ──
+        # Table layout
         for table in soup.find_all("table"):
             rows = table.find_all("tr")
             if len(rows) < 2:
@@ -409,15 +531,13 @@ class ClerkScraper:
             headers = [c.get_text(strip=True).lower()
                        for c in rows[0].find_all(["th", "td"])]
             if not any(kw in " ".join(headers)
-                       for kw in ["doc", "name", "date", "type", "grantor", "party"]):
+                       for kw in ["doc", "name", "date", "grantor", "party"]):
                 continue
 
             col: dict[str, int] = {}
             for i, h in enumerate(headers):
                 if re.search(r"doc.?num|instr|number", h) and "doc_num" not in col:
                     col["doc_num"] = i
-                if re.search(r"type", h) and "doc_type" not in col:
-                    col["doc_type"] = i
                 if re.search(r"date|filed|record", h) and "filed" not in col:
                     col["filed"] = i
                 if re.search(r"grantor|name|party", h) and "grantor" not in col:
@@ -438,23 +558,19 @@ class ClerkScraper:
                         idx = col.get(key)
                         return cells[idx].get_text(strip=True) \
                             if (idx is not None and idx < len(cells)) else ""
-
                     link_tag  = row.find("a", href=True)
                     clerk_url = ""
                     if link_tag:
                         h = link_tag["href"]
                         clerk_url = urljoin(PORTAL_BASE, h) \
                             if h.startswith("/") else h
-
                     doc_num = ct("doc_num") or \
                         (link_tag.get_text(strip=True) if link_tag else "")
                     if not doc_num:
                         continue
-
                     filed_raw = ct("filed")
                     dt        = parse_date(filed_raw)
                     filed_iso = dt.strftime("%Y-%m-%d") if dt else filed_raw
-
                     r = blank_record(code)
                     r.update({
                         "doc_num":   doc_num.strip(),
@@ -463,81 +579,37 @@ class ClerkScraper:
                         "grantee":   ct("grantee").strip(),
                         "amount":    parse_amount(ct("amount")),
                         "legal":     ct("legal").strip(),
-                        "clerk_url": clerk_url or url,
+                        "clerk_url": clerk_url,
                     })
                     records.append(r)
-                except Exception as exc:
-                    log.debug(f"Table row error: {exc}")
-
-        # ── Try card/div layout if table found nothing ──
-        if not records:
-            records = self._parse_cards(soup, code, url)
-
-        return records
-
-    def _parse_cards(self, soup, code: str, url: str) -> list[dict]:
-        records = []
-        cards = (
-            soup.find_all("div", class_=re.compile(r"result|document|record|row", re.I)) or
-            soup.find_all("li",  class_=re.compile(r"result|document|record", re.I))
-        )
-        for card in cards:
-            try:
-                text  = card.get_text(" ", strip=True)
-                link  = card.find("a", href=True)
-                clerk_url = ""
-                if link:
-                    h = link["href"]
-                    clerk_url = urljoin(PORTAL_BASE, h) if h.startswith("/") else h
-
-                doc_match = re.search(
-                    r"(?:doc(?:ument)?[\s#:]*|instr[\w]*[\s#:]*)(\d[\w\-/]+)",
-                    text, re.I)
-                doc_num = doc_match.group(1) if doc_match else (
-                    link.get_text(strip=True) if link else "")
-                if not doc_num:
-                    continue
-
-                date_match = re.search(r"\b(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\b", text)
-                filed_raw  = date_match.group(1) if date_match else ""
-                dt         = parse_date(filed_raw)
-                filed_iso  = dt.strftime("%Y-%m-%d") if dt else filed_raw
-
-                grantor_match = re.search(
-                    r"Grantor[:\s]+([A-Z][A-Z\s,\.]+?)(?:\s{2,}|Grantee|$)",
-                    text, re.I)
-                owner = grantor_match.group(1).strip() if grantor_match else ""
-
-                grantee_match = re.search(
-                    r"Grantee[:\s]+([A-Z][A-Z\s,\.]+?)(?:\s{2,}|$)",
-                    text, re.I)
-                grantee = grantee_match.group(1).strip() if grantee_match else ""
-
-                amt_match = re.search(r"\$[\d,]+(?:\.\d{2})?", text)
-                amount    = parse_amount(amt_match.group(0)) if amt_match else None
-
-                r = blank_record(code)
-                r.update({
-                    "doc_num":   doc_num.strip(),
-                    "filed":     filed_iso,
-                    "owner":     owner,
-                    "grantee":   grantee,
-                    "amount":    amount,
-                    "clerk_url": clerk_url or url,
-                })
-                records.append(r)
-            except Exception as exc:
-                log.debug(f"Card parse error: {exc}")
+                except Exception:
+                    pass
 
         return records
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Requests-based fallback (same portal, no JS rendering)
+# Direct API Scraper (no browser)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ClerkRequestsFallback:
-    RESULTS_URL = f"{PORTAL_BASE}/results/document/search/advanced"
+class DirectAPIScraper:
+    """
+    Tries to call the portal's backend REST API directly with requests.
+    The Neumo platform uses endpoints like:
+      GET  /api/search?...
+      POST /api/documents/search
+    Discovered by inspecting similar Neumo deployments.
+    """
+
+    CANDIDATE_ENDPOINTS = [
+        # GET endpoints
+        ("{base}/api/search",                    "GET"),
+        ("{base}/api/documents",                 "GET"),
+        ("{base}/api/records/search",            "GET"),
+        # POST endpoints
+        ("{base}/api/documents/search",          "POST"),
+        ("{base}/api/search/advanced",           "POST"),
+    ]
 
     def __init__(self, start: datetime, end: datetime):
         self.start   = start
@@ -548,37 +620,83 @@ class ClerkRequestsFallback:
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
             ),
-            "Accept":  "text/html,application/xhtml+xml,*/*",
-            "Referer": PORTAL_BASE,
+            "Accept":       "application/json, text/plain, */*",
+            "Referer":      PORTAL_BASE,
+            "Origin":       PORTAL_BASE,
+            "Content-Type": "application/json",
         })
+        # Seed cookies by hitting the homepage first
+        try:
+            self.session.get(PORTAL_BASE, timeout=15)
+        except Exception:
+            pass
 
     def fetch_all(self) -> list[dict]:
         records: list[dict] = []
         from_str = self.start.strftime("%m/%d/%Y")
         to_str   = self.end.strftime("%m/%d/%Y")
-        scraper  = ClerkScraper(self.start, self.end)
 
         for code in ALL_CODES:
             for page_num in range(1, 41):
-                params = {
-                    "category": "OPR", "dateType": "R",
-                    "fromDate": from_str, "toDate": to_str,
-                    "docTypes": code, "page": page_num, "perPage": 50,
-                }
-                try:
-                    resp = self.session.get(
-                        self.RESULTS_URL, params=params, timeout=30)
-                    resp.raise_for_status()
-                    recs = scraper._parse_page(resp.text, code, resp.url)
-                    records.extend(recs)
-                    if len(recs) < 50 or scraper._is_empty_page(resp.text):
-                        break
-                    time.sleep(0.5)
-                except Exception as e:
-                    log.debug(f"Requests fallback {code} p{page_num}: {e}")
+                items = self._try_endpoints(code, from_str, to_str, page_num)
+                if items is None:
+                    break  # No endpoint worked
+                for item in items:
+                    r = normalize_api_record(item, code)
+                    if r:
+                        records.append(r)
+                if len(items) < 50:
                     break
+                time.sleep(0.3)
 
         return records
+
+    def _try_endpoints(self, code, from_str, to_str, page_num) -> Optional[list]:
+        params_get = {
+            "category": "OPR", "dateType": "R",
+            "fromDate": from_str, "toDate": to_str,
+            "docTypes": code, "page": page_num, "perPage": 50,
+        }
+        body_post = {
+            "category": "OPR", "dateType": "R",
+            "fromDate": from_str, "toDate": to_str,
+            "docTypes": [code], "page": page_num, "perPage": 50,
+        }
+
+        for tmpl, method in self.CANDIDATE_ENDPOINTS:
+            url = tmpl.format(base=PORTAL_BASE)
+            try:
+                if method == "GET":
+                    r = self.session.get(url, params=params_get, timeout=20)
+                else:
+                    r = self.session.post(url, json=body_post, timeout=20)
+
+                if r.status_code in (401, 403, 404):
+                    continue
+                r.raise_for_status()
+                if "json" not in r.headers.get("content-type", ""):
+                    continue
+
+                data  = r.json()
+                items = self._extract(data)
+                if items is not None:
+                    log.debug(f"Direct API hit: {method} {url} → {len(items)} items")
+                    return items
+            except Exception as e:
+                log.debug(f"Direct API {url}: {e}")
+
+        return None
+
+    def _extract(self, body) -> Optional[list]:
+        if isinstance(body, list) and body:
+            return body
+        if isinstance(body, dict):
+            for key in ("results", "data", "documents", "hits",
+                        "records", "items", "content"):
+                val = body.get(key)
+                if isinstance(val, list):
+                    return val
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -682,16 +800,17 @@ async def main():
     parcel = ParcelLookup()
     parcel.build()
 
-    # 2. Playwright scrape
-    clerk = ClerkScraper(start_dt, end_dt)
-    await clerk.run()
-    records = clerk.records
+    # 2. Try direct API first (fast, no browser needed)
+    log.info("Trying direct API endpoints …")
+    records = DirectAPIScraper(start_dt, end_dt).fetch_all()
+    log.info(f"Direct API: {len(records)} records")
 
-    # 3. Requests fallback if Playwright got nothing
+    # 3. Playwright with network interception if direct API got nothing
     if not records:
-        log.warning("Playwright returned 0 – trying requests fallback …")
-        records = ClerkRequestsFallback(start_dt, end_dt).fetch_all()
-        log.info(f"Requests fallback: {len(records)} records")
+        log.info("Falling back to Playwright network interception …")
+        clerk = ClerkScraper(start_dt, end_dt)
+        await clerk.run()
+        records = clerk.records
 
     log.info(f"Raw total : {len(records)}")
 
