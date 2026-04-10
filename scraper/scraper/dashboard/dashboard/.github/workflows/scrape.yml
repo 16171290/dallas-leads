@@ -1,0 +1,84 @@
+name: Dallas County Lead Scraper
+
+on:
+  schedule:
+    # Run daily at 07:00 UTC (2am CDT / 1am CST)
+    - cron: "0 7 * * *"
+  workflow_dispatch:   # allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      # ── 1. Checkout repo ─────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ── 2. Set up Python ─────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: scraper/requirements.txt
+
+      # ── 3. Install Python dependencies ───────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            requests \
+            beautifulsoup4 \
+            lxml \
+            dbfread \
+            playwright
+
+      # ── 4. Install Playwright browser ────────────────────────────────────
+      - name: Install Playwright Chromium
+        run: python -m playwright install --with-deps chromium
+
+      # ── 5. Run scraper ───────────────────────────────────────────────────
+      - name: Run fetch.py
+        run: python scraper/fetch.py
+        env:
+          PYTHONUNBUFFERED: "1"
+          # Add any secrets here if the clerk portal ever requires auth:
+          # CLERK_USERNAME: ${{ secrets.CLERK_USERNAME }}
+          # CLERK_PASSWORD: ${{ secrets.CLERK_PASSWORD }}
+
+      # ── 6. Commit records.json files ─────────────────────────────────────
+      - name: Commit updated records
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dashboard/records.json data/records.json data/ghl_export.csv || true
+          git diff --cached --quiet && echo "No changes" || \
+            git commit -m "chore: auto-update leads $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
+
+      # ── 7. Deploy dashboard to GitHub Pages ──────────────────────────────
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard/
+
+  deploy-pages:
+    needs: scrape
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
