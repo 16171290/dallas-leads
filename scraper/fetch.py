@@ -1,11 +1,10 @@
 """
 Dallas County, Texas — Motivated Seller Lead Scraper
 =====================================================
-Target portal : https://dallas.tx.publicsearch.us  (Neumo PublicSearch — React SPA)
-Strategy      : Intercept the portal's own background API/JSON calls using
-                Playwright's network request interception.  The SPA fetches
-                results from a REST endpoint; we capture that JSON directly.
-Parcel data   : https://www.dallascad.org/DataProducts.aspx (bulk DBF)
+Target portal : https://dallas.tx.publicsearch.us
+Proxy         : Decodo (formerly Smartproxy) residential rotating proxy
+                Set env vars DECODO_USER and DECODO_PASS
+Parcel data   : https://www.dallascad.org/DataProducts.aspx
 Look-back     : Last 7 days
 """
 
@@ -14,6 +13,7 @@ import csv
 import io
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -40,6 +40,22 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("dallas_scraper")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Decodo proxy config
+# Residential rotating endpoint — every new request gets a fresh IP
+# ─────────────────────────────────────────────────────────────────────────────
+DECODO_USER = os.environ.get("DECODO_USER", "")
+DECODO_PASS = os.environ.get("DECODO_PASS", "")
+DECODO_HOST = "gate.decodo.com"
+DECODO_PORT = 10000
+
+# Proxy URL formats
+PROXY_URL_AUTH = f"http://{DECODO_USER}:{DECODO_PASS}@{DECODO_HOST}:{DECODO_PORT}"
+PROXY_URL_BARE = f"http://{DECODO_HOST}:{DECODO_PORT}"
+
+def proxy_enabled() -> bool:
+    return bool(DECODO_USER and DECODO_PASS)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -148,38 +164,26 @@ def blank_record(code: str) -> dict:
 
 
 def normalize_api_record(item: dict, code: str) -> Optional[dict]:
-    """Convert one item from the portal's JSON API into our record format."""
     try:
-        cat, lbl = DOC_TYPE_MAP.get(code, (code, code))
-
-        # Doc number — various field names seen in publicsearch APIs
         doc_num = str(
-            item.get("instrumentNumber") or
-            item.get("docNumber") or
-            item.get("documentNumber") or
-            item.get("id") or ""
+            item.get("instrumentNumber") or item.get("docNumber") or
+            item.get("documentNumber") or item.get("id") or ""
         ).strip()
         if not doc_num:
             return None
 
-        # Filed date
         filed_raw = str(
-            item.get("recordedDate") or
-            item.get("fileDate") or
-            item.get("instrumentDate") or
-            item.get("date") or ""
+            item.get("recordedDate") or item.get("fileDate") or
+            item.get("instrumentDate") or item.get("date") or ""
         )
         dt        = parse_date(filed_raw)
         filed_iso = dt.strftime("%Y-%m-%d") if dt else filed_raw
 
-        # Parties
-        # grantor / grantors list
         grantor_list = item.get("grantors") or item.get("grantor") or []
         if isinstance(grantor_list, list):
             owner = "; ".join(
                 p.get("name", "") if isinstance(p, dict) else str(p)
-                for p in grantor_list
-            ).strip()
+                for p in grantor_list).strip()
         else:
             owner = str(grantor_list).strip()
 
@@ -187,38 +191,46 @@ def normalize_api_record(item: dict, code: str) -> Optional[dict]:
         if isinstance(grantee_list, list):
             grantee = "; ".join(
                 p.get("name", "") if isinstance(p, dict) else str(p)
-                for p in grantee_list
-            ).strip()
+                for p in grantee_list).strip()
         else:
             grantee = str(grantee_list).strip()
 
-        # Amount
         amount = parse_amount(
             item.get("consideration") or item.get("amount") or
-            item.get("docAmount") or ""
-        )
+            item.get("docAmount") or "")
 
-        # Legal description
-        legal = str(item.get("legalDescription") or item.get("legal") or "").strip()
-
-        # Direct document URL
-        doc_id    = item.get("id") or doc_num
+        legal  = str(item.get("legalDescription") or item.get("legal") or "").strip()
+        doc_id = item.get("id") or doc_num
         clerk_url = f"{PORTAL_BASE}/doc/{doc_id}" if doc_id else ""
 
         r = blank_record(code)
-        r.update({
-            "doc_num":   doc_num,
-            "filed":     filed_iso,
-            "owner":     owner,
-            "grantee":   grantee,
-            "amount":    amount,
-            "legal":     legal,
-            "clerk_url": clerk_url,
-        })
+        r.update({"doc_num": doc_num, "filed": filed_iso, "owner": owner,
+                  "grantee": grantee, "amount": amount,
+                  "legal": legal, "clerk_url": clerk_url})
         return r
     except Exception as exc:
-        log.debug(f"normalize_api_record error: {exc}")
+        log.debug(f"normalize error: {exc}")
         return None
+
+
+def make_requests_session() -> requests.Session:
+    """Create a requests session optionally routed through Decodo proxy."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        ),
+        "Accept":          "text/html,application/xhtml+xml,application/json,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    if proxy_enabled():
+        session.proxies = {
+            "http":  PROXY_URL_AUTH,
+            "https": PROXY_URL_AUTH,
+        }
+        log.info(f"Requests session using Decodo proxy: {DECODO_HOST}:{DECODO_PORT}")
+    return session
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,11 +260,7 @@ class ParcelLookup:
         return {}
 
     def _download(self) -> Optional[bytes]:
-        session = requests.Session()
-        session.headers["User-Agent"] = (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-        )
+        session = make_requests_session()
         try:
             resp = session.get(CAD_PAGE, timeout=30)
             resp.raise_for_status()
@@ -354,20 +362,13 @@ class ParcelLookup:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dallas County Clerk Scraper — Network Interception Strategy
+# Dallas County Clerk Scraper — Playwright + Decodo Proxy
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ClerkScraper:
     """
-    Uses Playwright to load the PublicSearch SPA and intercepts the
-    background API/JSON calls the app makes to fetch search results.
-
-    The Neumo platform typically calls one of these endpoints:
-      /api/search   (GET with query params)
-      /api/documents/search  (POST with JSON body)
-      /results/...  (navigated URL that triggers an XHR fetch)
-
-    We capture ALL JSON responses from the portal domain and parse them.
+    Playwright scraper routed through Decodo residential proxy.
+    Intercepts background JSON API calls the React SPA makes.
     """
 
     PER_PAGE  = 50
@@ -377,24 +378,41 @@ class ClerkScraper:
         self.start   = start
         self.end     = end
         self.records: list[dict] = []
-        # Captured API responses keyed by (code, page)
-        self._api_cache: dict[str, list[dict]] = {}
 
     async def run(self):
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            ctx = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 900},
-            )
 
-            # ── Intercept all JSON responses ──────────────────────────────
+            # ── Build launch args ─────────────────────────────────────────
+            launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
+            context_kwargs = {
+                "user_agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+                ),
+                "viewport":          {"width": 1280, "height": 900},
+                "locale":            "en-US",
+                "timezone_id":       "America/Chicago",
+                "extra_http_headers": {
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            }
+
+            if proxy_enabled():
+                log.info(f"Playwright using Decodo proxy: {DECODO_HOST}:{DECODO_PORT}")
+                context_kwargs["proxy"] = {
+                    "server":   PROXY_URL_BARE,
+                    "username": DECODO_USER,
+                    "password": DECODO_PASS,
+                }
+            else:
+                log.warning("No proxy configured — bot detection may block results")
+
+            browser = await pw.chromium.launch(
+                headless=True, args=launch_args)
+            ctx  = await browser.new_context(**context_kwargs)
+            page = await ctx.new_page()
+
+            # ── Capture all JSON API responses ────────────────────────────
             captured: list[dict] = []
 
             async def handle_response(response):
@@ -404,24 +422,26 @@ class ClerkScraper:
                     if "json" in ct and PORTAL_BASE in url:
                         body = await response.json()
                         captured.append({"url": url, "body": body})
-                        log.debug(f"Captured JSON from: {url}")
+                        log.debug(f"API response captured: {url}")
                 except Exception:
                     pass
 
-            page = await ctx.new_page()
             page.on("response", handle_response)
 
-            # Load home page first to get cookies
+            # ── Load home page to set session cookies ─────────────────────
             log.info("Loading portal home page …")
             try:
-                await page.goto(PORTAL_BASE, timeout=30_000,
+                await page.goto(PORTAL_BASE, timeout=40_000,
                                 wait_until="domcontentloaded")
-                await page.wait_for_load_state("networkidle", timeout=15_000)
-                for btn in ["Accept", "I Agree", "Continue", "OK", "Close"]:
+                await page.wait_for_load_state("networkidle", timeout=20_000)
+                # Dismiss any terms/cookie dialog
+                for btn in ["Accept", "I Agree", "Continue", "OK", "Close",
+                            "Accept All", "Got it"]:
                     try:
                         await page.click(
                             f'button:has-text("{btn}"), a:has-text("{btn}")',
-                            timeout=3_000)
+                            timeout=2_000)
+                        log.info(f"Dismissed: {btn}")
                         break
                     except Exception:
                         pass
@@ -434,10 +454,10 @@ class ClerkScraper:
             for code in ALL_CODES:
                 log.info(f"Searching: {code}")
                 code_records: list[dict] = []
-                captured.clear()
 
                 for page_num in range(1, self.MAX_PAGES + 1):
                     captured.clear()
+
                     params = {
                         "category": "OPR",
                         "dateType": "R",
@@ -449,32 +469,36 @@ class ClerkScraper:
                     }
                     url = f"{PORTAL_BASE}/results/document/search/advanced?{urlencode(params)}"
 
-                    try:
-                        await page.goto(url, timeout=30_000,
-                                        wait_until="domcontentloaded")
-                        # Wait for network to settle so API calls complete
-                        await page.wait_for_load_state("networkidle", timeout=20_000)
-                        # Extra wait for JS rendering
-                        await asyncio.sleep(2)
-                    except Exception as e:
-                        log.warning(f"  Page load error p{page_num}: {e}")
+                    loaded = False
+                    for attempt in range(3):
+                        try:
+                            await page.goto(url, timeout=40_000,
+                                            wait_until="domcontentloaded")
+                            await page.wait_for_load_state("networkidle",
+                                                           timeout=25_000)
+                            await asyncio.sleep(3)  # let JS finish rendering
+                            loaded = True
+                            break
+                        except PWTimeout:
+                            log.warning(f"  Timeout p{page_num} attempt {attempt+1}")
+                            await asyncio.sleep(4)
+
+                    if not loaded:
                         break
 
-                    # ── Parse intercepted JSON responses ──────────────────
-                    page_items = []
+                    # ── Parse intercepted JSON ────────────────────────────
+                    page_items: list[dict] = []
                     for cap in captured:
-                        items = self._extract_items_from_json(cap["body"])
+                        items = self._extract_items(cap["body"])
                         page_items.extend(items)
 
+                    # ── HTML fallback ─────────────────────────────────────
                     if not page_items:
-                        # Fallback: try to parse rendered HTML
                         html       = await page.content()
-                        page_items = self._parse_html_fallback(html, code)
+                        page_items = self._parse_html(html, code)
 
-                    # Normalize to our record format
                     for item in page_items:
                         if isinstance(item, dict) and "doc_num" in item:
-                            # Already normalized (from HTML parser)
                             code_records.append(item)
                         else:
                             r = normalize_api_record(item, code)
@@ -482,8 +506,6 @@ class ClerkScraper:
                                 code_records.append(r)
 
                     log.debug(f"  p{page_num}: {len(page_items)} items")
-
-                    # Stop paginating if we got less than a full page
                     if len(page_items) < self.PER_PAGE:
                         break
 
@@ -493,22 +515,19 @@ class ClerkScraper:
 
             await browser.close()
 
-        log.info(f"Playwright scrape complete – {len(self.records)} raw records")
+        log.info(f"Playwright complete – {len(self.records)} raw records")
 
-    def _extract_items_from_json(self, body) -> list:
-        """
-        Extract document items from whatever JSON structure the portal returns.
-        Handles: list, {results:[]}, {data:[]}, {documents:[]}, {hits:[]}, etc.
-        """
+    # ── JSON extraction ───────────────────────────────────────────────────────
+
+    def _extract_items(self, body) -> list:
         if isinstance(body, list):
             return body
         if isinstance(body, dict):
-            for key in ("results", "data", "documents", "hits", "records",
-                        "items", "content", "rows"):
+            for key in ("results", "data", "documents", "hits",
+                        "records", "items", "content", "rows"):
                 val = body.get(key)
                 if isinstance(val, list) and val:
                     return val
-            # Nested under "search" or similar
             for key in ("search", "response", "payload"):
                 val = body.get(key)
                 if isinstance(val, dict):
@@ -518,12 +537,12 @@ class ClerkScraper:
                             return v2
         return []
 
-    def _parse_html_fallback(self, html: str, code: str) -> list[dict]:
-        """Parse rendered HTML results if JSON interception yielded nothing."""
+    # ── HTML table fallback ───────────────────────────────────────────────────
+
+    def _parse_html(self, html: str, code: str) -> list[dict]:
         records = []
         soup    = BeautifulSoup(html, "lxml")
 
-        # Table layout
         for table in soup.find_all("table"):
             rows = table.find_all("tr")
             if len(rows) < 2:
@@ -568,9 +587,8 @@ class ClerkScraper:
                         (link_tag.get_text(strip=True) if link_tag else "")
                     if not doc_num:
                         continue
-                    filed_raw = ct("filed")
-                    dt        = parse_date(filed_raw)
-                    filed_iso = dt.strftime("%Y-%m-%d") if dt else filed_raw
+                    dt        = parse_date(ct("filed"))
+                    filed_iso = dt.strftime("%Y-%m-%d") if dt else ct("filed")
                     r = blank_record(code)
                     r.update({
                         "doc_num":   doc_num.strip(),
@@ -586,117 +604,6 @@ class ClerkScraper:
                     pass
 
         return records
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Direct API Scraper (no browser)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class DirectAPIScraper:
-    """
-    Tries to call the portal's backend REST API directly with requests.
-    The Neumo platform uses endpoints like:
-      GET  /api/search?...
-      POST /api/documents/search
-    Discovered by inspecting similar Neumo deployments.
-    """
-
-    CANDIDATE_ENDPOINTS = [
-        # GET endpoints
-        ("{base}/api/search",                    "GET"),
-        ("{base}/api/documents",                 "GET"),
-        ("{base}/api/records/search",            "GET"),
-        # POST endpoints
-        ("{base}/api/documents/search",          "POST"),
-        ("{base}/api/search/advanced",           "POST"),
-    ]
-
-    def __init__(self, start: datetime, end: datetime):
-        self.start   = start
-        self.end     = end
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-            ),
-            "Accept":       "application/json, text/plain, */*",
-            "Referer":      PORTAL_BASE,
-            "Origin":       PORTAL_BASE,
-            "Content-Type": "application/json",
-        })
-        # Seed cookies by hitting the homepage first
-        try:
-            self.session.get(PORTAL_BASE, timeout=15)
-        except Exception:
-            pass
-
-    def fetch_all(self) -> list[dict]:
-        records: list[dict] = []
-        from_str = self.start.strftime("%m/%d/%Y")
-        to_str   = self.end.strftime("%m/%d/%Y")
-
-        for code in ALL_CODES:
-            for page_num in range(1, 41):
-                items = self._try_endpoints(code, from_str, to_str, page_num)
-                if items is None:
-                    break  # No endpoint worked
-                for item in items:
-                    r = normalize_api_record(item, code)
-                    if r:
-                        records.append(r)
-                if len(items) < 50:
-                    break
-                time.sleep(0.3)
-
-        return records
-
-    def _try_endpoints(self, code, from_str, to_str, page_num) -> Optional[list]:
-        params_get = {
-            "category": "OPR", "dateType": "R",
-            "fromDate": from_str, "toDate": to_str,
-            "docTypes": code, "page": page_num, "perPage": 50,
-        }
-        body_post = {
-            "category": "OPR", "dateType": "R",
-            "fromDate": from_str, "toDate": to_str,
-            "docTypes": [code], "page": page_num, "perPage": 50,
-        }
-
-        for tmpl, method in self.CANDIDATE_ENDPOINTS:
-            url = tmpl.format(base=PORTAL_BASE)
-            try:
-                if method == "GET":
-                    r = self.session.get(url, params=params_get, timeout=20)
-                else:
-                    r = self.session.post(url, json=body_post, timeout=20)
-
-                if r.status_code in (401, 403, 404):
-                    continue
-                r.raise_for_status()
-                if "json" not in r.headers.get("content-type", ""):
-                    continue
-
-                data  = r.json()
-                items = self._extract(data)
-                if items is not None:
-                    log.debug(f"Direct API hit: {method} {url} → {len(items)} items")
-                    return items
-            except Exception as e:
-                log.debug(f"Direct API {url}: {e}")
-
-        return None
-
-    def _extract(self, body) -> Optional[list]:
-        if isinstance(body, list) and body:
-            return body
-        if isinstance(body, dict):
-            for key in ("results", "data", "documents", "hits",
-                        "records", "items", "content"):
-                val = body.get(key)
-                if isinstance(val, list):
-                    return val
-        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -794,27 +701,21 @@ async def main():
     log.info("  Dallas County TX — Motivated Seller Lead Scraper")
     log.info(f"  Portal  : {PORTAL_BASE}")
     log.info(f"  Range   : {start_dt.date()} → {end_dt.date()}")
+    log.info(f"  Proxy   : {'Decodo ENABLED' if proxy_enabled() else 'DISABLED (no credentials)'}")
     log.info("=" * 65)
 
     # 1. Parcel index
     parcel = ParcelLookup()
     parcel.build()
 
-    # 2. Try direct API first (fast, no browser needed)
-    log.info("Trying direct API endpoints …")
-    records = DirectAPIScraper(start_dt, end_dt).fetch_all()
-    log.info(f"Direct API: {len(records)} records")
-
-    # 3. Playwright with network interception if direct API got nothing
-    if not records:
-        log.info("Falling back to Playwright network interception …")
-        clerk = ClerkScraper(start_dt, end_dt)
-        await clerk.run()
-        records = clerk.records
+    # 2. Playwright scrape via Decodo proxy
+    clerk = ClerkScraper(start_dt, end_dt)
+    await clerk.run()
+    records = clerk.records
 
     log.info(f"Raw total : {len(records)}")
 
-    # 4. Deduplicate
+    # 3. Deduplicate
     seen: set[str] = set()
     unique: list[dict] = []
     for r in records:
@@ -824,7 +725,7 @@ async def main():
             unique.append(r)
     log.info(f"After dedup: {len(unique)}")
 
-    # 5. Parcel enrichment
+    # 4. Parcel enrichment
     with_addr = 0
     for r in unique:
         hit = parcel.lookup(r.get("owner", ""))
@@ -833,12 +734,12 @@ async def main():
             with_addr += 1
     log.info(f"With address: {with_addr}")
 
-    # 6. Score
+    # 5. Score
     for r in unique:
         score_record(r, unique)
     unique.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    # 7. Write JSON
+    # 6. Write JSON
     payload = {
         "fetched_at": now.isoformat(),
         "source":     "Dallas County Clerk (dallas.tx.publicsearch.us)",
@@ -855,7 +756,7 @@ async def main():
             json.dumps(payload, indent=2, default=str), encoding="utf-8")
         log.info(f"JSON → {out}")
 
-    # 8. GHL CSV
+    # 7. GHL CSV
     write_ghl_csv(unique, GHL_CSV)
 
     log.info("=" * 65)
