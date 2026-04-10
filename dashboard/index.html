@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dallas County – Motivated Seller Leads</title>
+<style>
+  :root {
+    --bg:#0f1117;--surface:#1a1d26;--surface2:#242736;
+    --border:#2e3147;--accent:#4f6ef7;--accent2:#7c3aed;
+    --green:#22c55e;--yellow:#f59e0b;--red:#ef4444;
+    --text:#e2e8f0;--muted:#94a3b8;--radius:10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+  a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+  header{background:linear-gradient(135deg,#1a1d26,#0f1117);border-bottom:1px solid var(--border);
+    padding:20px 32px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px}
+  .logo{display:flex;align-items:center;gap:12px}
+  .logo-icon{width:44px;height:44px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px}
+  h1{font-size:1.4rem;font-weight:700}
+  .subtitle{font-size:.8rem;color:var(--muted);margin-top:2px}
+  .header-right{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .badge{background:var(--surface2);border:1px solid var(--border);border-radius:20px;
+    padding:5px 14px;font-size:.78rem;color:var(--muted)}
+  .badge strong{color:var(--text)}
+  .btn{background:var(--accent);color:#fff;border:none;border-radius:var(--radius);
+    padding:9px 18px;font-size:.85rem;font-weight:600;cursor:pointer;transition:opacity .2s}
+  .btn:hover{opacity:.85}
+  .btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+  .btn-outline:hover{background:var(--surface2)}
+  .stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:16px;padding:24px 32px}
+  .stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px}
+  .stat-label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+  .stat-value{font-size:2rem;font-weight:800;margin-top:4px}
+  .sv-blue{color:var(--accent)} .sv-green{color:var(--green)} .sv-yellow{color:var(--yellow)} .sv-red{color:var(--red)}
+  .controls{padding:0 32px 20px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  input[type=text],select{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+    padding:9px 14px;color:var(--text);font-size:.85rem;outline:none}
+  input[type=text]{min-width:240px} input[type=text]:focus,select:focus{border-color:var(--accent)}
+  select{cursor:pointer}
+  .results-count{margin-left:auto;font-size:.82rem;color:var(--muted)}
+  .table-wrap{padding:0 32px 40px;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:.83rem}
+  thead tr{background:var(--surface2);border-bottom:2px solid var(--border)}
+  th{padding:12px 14px;text-align:left;font-weight:600;font-size:.76rem;text-transform:uppercase;
+    letter-spacing:.04em;color:var(--muted);white-space:nowrap;cursor:pointer;user-select:none}
+  th:hover{color:var(--text)}
+  th.sorted{color:var(--accent)}
+  tbody tr{border-bottom:1px solid var(--border);transition:background .1s}
+  tbody tr:hover{background:var(--surface)}
+  td{padding:12px 14px;vertical-align:top;max-width:220px}
+  td.nw{white-space:nowrap}
+  .score-pill{display:inline-flex;align-items:center;justify-content:center;min-width:42px;
+    padding:3px 10px;border-radius:20px;font-weight:700;font-size:.82rem}
+  .sc-high{background:rgba(34,197,94,.18);color:var(--green)}
+  .sc-mid{background:rgba(245,158,11,.18);color:var(--yellow)}
+  .sc-low{background:rgba(239,68,68,.18);color:var(--red)}
+  .cat-badge{display:inline-block;padding:2px 9px;border-radius:6px;
+    font-size:.72rem;font-weight:700;letter-spacing:.04em;white-space:nowrap}
+  .ct-LP,.ct-NOFC{background:rgba(239,68,68,.2);color:#f87171}
+  .ct-TAXDEED{background:rgba(245,158,11,.2);color:#fbbf24}
+  .ct-JUD,.ct-CCJ,.ct-DRJUD{background:rgba(168,85,247,.2);color:#c084fc}
+  .ct-LN,.ct-LNMECH,.ct-LNHOA,.ct-LNCORPTX,.ct-LNIRS,.ct-LNFED,.ct-MEDLN{background:rgba(59,130,246,.2);color:#93c5fd}
+  .ct-PRO{background:rgba(20,184,166,.2);color:#5eead4}
+  .ct-NOC,.ct-RELLP,.ct-default{background:rgba(107,114,128,.2);color:#9ca3af}
+  .flags{display:flex;flex-wrap:wrap;gap:4px}
+  .flag-tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:.68rem;
+    background:var(--surface2);border:1px solid var(--border);color:var(--muted);white-space:nowrap}
+  .amt-high{color:var(--red);font-weight:700}
+  .amt-mid{color:var(--yellow);font-weight:600}
+  .empty{text-align:center;padding:80px 20px;color:var(--muted)}
+  .empty h2{font-size:1.4rem;margin-bottom:8px;color:var(--text)}
+  footer{text-align:center;padding:20px;font-size:.75rem;color:var(--muted);border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🏠</div>
+    <div>
+      <h1>Dallas County Motivated Seller Leads</h1>
+      <div class="subtitle" id="subtitle">Loading …</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="badge" id="rangeBadge"><strong>—</strong></div>
+    <button class="btn btn-outline" onclick="exportCSV()">⬇ Export GHL CSV</button>
+  </div>
+</header>
+
+<div class="stats-bar">
+  <div class="stat-card"><div class="stat-label">Total Leads</div>
+    <div class="stat-value sv-blue" id="stTotal">—</div></div>
+  <div class="stat-card"><div class="stat-label">With Address</div>
+    <div class="stat-value sv-green" id="stAddr">—</div></div>
+  <div class="stat-card"><div class="stat-label">Hot Leads (≥70)</div>
+    <div class="stat-value sv-green" id="stHigh">—</div></div>
+  <div class="stat-card"><div class="stat-label">Pre-Foreclosure</div>
+    <div class="stat-value sv-red" id="stFc">—</div></div>
+  <div class="stat-card"><div class="stat-label">Liens</div>
+    <div class="stat-value sv-yellow" id="stLien">—</div></div>
+  <div class="stat-card"><div class="stat-label">Probate</div>
+    <div class="stat-value" id="stPro">—</div></div>
+</div>
+
+<div class="controls">
+  <input type="text" id="searchBox" placeholder="🔍  Search owner, doc#, address, legal …" oninput="applyFilters()"/>
+  <select id="catFilter" onchange="applyFilters()">
+    <option value="">All Lead Types</option>
+    <option value="LP">Lis Pendens</option>
+    <option value="NOFC">Notice of Foreclosure</option>
+    <option value="TAXDEED">Tax Deed</option>
+    <option value="JUD">Judgment</option>
+    <option value="CCJ">Certified Judgment</option>
+    <option value="DRJUD">Domestic Judgment</option>
+    <option value="LNCORPTX">Corp Tax Lien</option>
+    <option value="LNIRS">IRS Lien</option>
+    <option value="LNFED">Federal Lien</option>
+    <option value="LN">Lien</option>
+    <option value="LNMECH">Mechanic Lien</option>
+    <option value="LNHOA">HOA Lien</option>
+    <option value="MEDLN">Medicaid Lien</option>
+    <option value="PRO">Probate</option>
+    <option value="NOC">Notice of Commencement</option>
+    <option value="RELLP">Release Lis Pendens</option>
+  </select>
+  <select id="scoreFilter" onchange="applyFilters()">
+    <option value="">All Scores</option>
+    <option value="70">Score ≥ 70 (Hot)</option>
+    <option value="50">Score ≥ 50 (Warm)</option>
+    <option value="30">Score ≥ 30</option>
+  </select>
+  <select id="addrFilter" onchange="applyFilters()">
+    <option value="">Any Record</option>
+    <option value="1">Has Address Only</option>
+  </select>
+  <span class="results-count" id="resultsCount"></span>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th onclick="sortBy('score')"     data-col="score">Score ↕</th>
+        <th onclick="sortBy('filed')"     data-col="filed">Filed ↕</th>
+        <th onclick="sortBy('cat_label')" data-col="cat_label">Type ↕</th>
+        <th onclick="sortBy('owner')"     data-col="owner">Owner ↕</th>
+        <th onclick="sortBy('amount')"    data-col="amount">Amount ↕</th>
+        <th>Property Address</th>
+        <th>Mail Address</th>
+        <th>Doc #</th>
+        <th>Flags</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="empty" id="emptyMsg" style="display:none">
+    <h2>No leads found</h2>
+    <p>Adjust filters or wait for the next scheduled scrape.</p>
+  </div>
+</div>
+
+<footer>
+  Data: Dallas County Clerk (dcrecords.dallascounty.org) + Dallas CAD (dallascad.org) &nbsp;|&nbsp;
+  Auto-refreshed daily 07:00 UTC via GitHub Actions
+</footer>
+
+<script>
+let ALL=[],filtered=[],sortCol='score',sortAsc=false;
+
+async function init(){
+  try{
+    const d=await(await fetch('records.json?t='+Date.now())).json();
+    ALL=d.records||[];
+    document.getElementById('stTotal').textContent=d.total??0;
+    document.getElementById('stAddr').textContent=d.with_address??0;
+    document.getElementById('stHigh').textContent=ALL.filter(r=>r.score>=70).length;
+    document.getElementById('stFc').textContent=ALL.filter(r=>['NOFC','TAXDEED'].includes(r.cat)).length;
+    document.getElementById('stLien').textContent=ALL.filter(r=>['LN','LNMECH','LNHOA','LNCORPTX','LNIRS','LNFED','MEDLN'].includes(r.cat)).length;
+    document.getElementById('stPro').textContent=ALL.filter(r=>r.cat==='PRO').length;
+    const fa=d.fetched_at?new Date(d.fetched_at).toLocaleString():'—';
+    document.getElementById('subtitle').textContent='Last updated: '+fa;
+    const s=d.date_range?.start||'',e=d.date_range?.end||'';
+    document.getElementById('rangeBadge').innerHTML=`<strong>${s}</strong> → <strong>${e}</strong>`;
+    applyFilters();
+  }catch(err){
+    document.getElementById('tbody').innerHTML=
+      `<tr><td colspan="10" style="text-align:center;padding:60px;color:#f87171">
+        Could not load records.json — run the scraper first.<br><small>${err}</small></td></tr>`;
+  }
+}
+
+function applyFilters(){
+  const q=document.getElementById('searchBox').value.toLowerCase();
+  const cat=document.getElementById('catFilter').value;
+  const minSc=parseInt(document.getElementById('scoreFilter').value)||0;
+  const addrOnly=document.getElementById('addrFilter').value;
+  filtered=ALL.filter(r=>{
+    if(cat&&r.cat!==cat)return false;
+    if(r.score<minSc)return false;
+    if(addrOnly&&!(r.prop_address||r.mail_address))return false;
+    if(q){const b=[r.owner,r.doc_num,r.prop_address,r.mail_address,r.legal,r.grantee,r.cat_label].join(' ').toLowerCase();
+      if(!b.includes(q))return false;}
+    return true;
+  });
+  filtered.sort((a,b)=>{
+    let va=a[sortCol]??'',vb=b[sortCol]??'';
+    if(typeof va==='number'&&typeof vb==='number')return sortAsc?va-vb:vb-va;
+    return sortAsc?String(va).localeCompare(String(vb)):String(vb).localeCompare(String(va));
+  });
+  document.getElementById('resultsCount').textContent=filtered.length.toLocaleString()+' result'+(filtered.length!==1?'s':'');
+  renderTable();
+}
+
+function sortBy(col){
+  sortAsc=sortCol===col?!sortAsc:(col!=='score');
+  sortCol=col;
+  document.querySelectorAll('th[data-col]').forEach(t=>t.classList.toggle('sorted',t.dataset.col===col));
+  applyFilters();
+}
+
+function renderTable(){
+  const tbody=document.getElementById('tbody'),em=document.getElementById('emptyMsg');
+  if(!filtered.length){tbody.innerHTML='';em.style.display='block';return;}
+  em.style.display='none';
+  tbody.innerHTML=filtered.map(r=>{
+    const sc=r.score??0,scCls=sc>=70?'sc-high':sc>=50?'sc-mid':'sc-low';
+    const amt=parseFloat(r.amount)||0;
+    const amtStr=amt>0?'$'+amt.toLocaleString('en-US',{maximumFractionDigits:0}):'—';
+    const amtCls=amt>100000?'amt-high':amt>50000?'amt-mid':'';
+    const pa=[r.prop_address,r.prop_city,r.prop_state,r.prop_zip].filter(Boolean).join(', ')||'—';
+    const ma=[r.mail_address,r.mail_city,r.mail_state,r.mail_zip].filter(Boolean).join(', ')||'—';
+    const flags=(r.flags||[]).map(f=>`<span class="flag-tag">${esc(f)}</span>`).join('');
+    const lnk=r.clerk_url?`<a href="${esc(r.clerk_url)}" target="_blank" rel="noopener">View ↗</a>`:'—';
+    return `<tr>
+      <td class="nw"><span class="score-pill ${scCls}">${sc}</span></td>
+      <td class="nw">${esc(r.filed||'—')}</td>
+      <td class="nw"><span class="cat-badge ct-${esc(r.cat||'default')}">${esc(r.cat_label||r.cat||'—')}</span></td>
+      <td>${esc(r.owner||'—')}</td>
+      <td class="nw ${amtCls}">${amtStr}</td>
+      <td>${esc(pa)}</td>
+      <td>${esc(ma)}</td>
+      <td class="nw">${esc(r.doc_num||'—')}</td>
+      <td><div class="flags">${flags}</div></td>
+      <td class="nw">${lnk}</td>
+    </tr>`;
+  }).join('');
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function exportCSV(){
+  const cols=['First Name','Last Name','Mailing Address','Mailing City','Mailing State','Mailing Zip',
+    'Property Address','Property City','Property State','Property Zip','Lead Type','Document Type',
+    'Date Filed','Document Number','Amount/Debt Owed','Seller Score','Motivated Seller Flags','Source','Public Records URL'];
+  const rows=[cols.join(',')];
+  for(const r of filtered){
+    const pts=(r.owner||'').trim().split(/\s+/);
+    const first=pts[0]||'',last=pts.slice(1).join(' ');
+    rows.push([first,last,r.mail_address||'',r.mail_city||'',r.mail_state||'',r.mail_zip||'',
+      r.prop_address||'',r.prop_city||'',r.prop_state||'',r.prop_zip||'',
+      r.cat_label||'',r.doc_type||'',r.filed||'',r.doc_num||'',
+      r.amount||'',r.score||0,(r.flags||[]).join('; '),
+      'Dallas County Clerk (dcrecords.dallascounty.org)',r.clerk_url||'']
+      .map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
+  }
+  const a=Object.assign(document.createElement('a'),{
+    href:URL.createObjectURL(new Blob([rows.join('\n')],{type:'text/csv'})),
+    download:`dallas_leads_${new Date().toISOString().slice(0,10)}.csv`});
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+}
+
+init();
+</script>
+</body>
+</html>
