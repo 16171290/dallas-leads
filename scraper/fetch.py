@@ -476,8 +476,15 @@ class ClerkScraper:
                             await page.goto(url, timeout=40_000,
                                             wait_until="domcontentloaded")
                             await page.wait_for_load_state("networkidle",
-                                                           timeout=25_000)
-                            await asyncio.sleep(3)  # let JS finish rendering
+                                                   timeout=25_000)
+                    await asyncio.sleep(5)  # let JS finish rendering
+                    # Wait for results to actually appear
+                    try:
+                        await page.wait_for_selector(
+                            'table, [class*="result"], [class*="document"], [class*="record"]',
+                            timeout=10_000)
+                    except Exception:
+                        pass
                             loaded = True
                             break
                         except PWTimeout:
