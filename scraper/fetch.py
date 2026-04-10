@@ -481,7 +481,7 @@ class ClerkScraper:
                     # Wait for results to actually appear
                     try:
                         await page.wait_for_selector(
-                            'table, [class*="result"], [class*="document"], [class*="record"]',
+                            'table, [class*="result"], [class*="document"]',
                             timeout=10_000)
                     except Exception:
                         pass
