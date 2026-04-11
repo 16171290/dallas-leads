@@ -48,7 +48,7 @@ log = logging.getLogger("dallas_scraper")
 DECODO_USER = os.environ.get("DECODO_USER", "")
 DECODO_PASS = os.environ.get("DECODO_PASS", "")
 DECODO_HOST = "gate.decodo.com"
-DECODO_PORT = 7000
+DECODO_PORT = 10001
 
 # Proxy URL formats
 PROXY_URL_AUTH = f"http://{DECODO_USER}:{DECODO_PASS}@{DECODO_HOST}:{DECODO_PORT}"
