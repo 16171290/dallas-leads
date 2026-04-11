@@ -476,7 +476,7 @@ class ClerkScraper:
                                             wait_until="domcontentloaded")
                             await page.wait_for_load_state("networkidle",
                                                            timeout=25_000)
-                            await asyncio.sleep(5)  # let JS finish rendering
+                            await asyncio.sleep(3)  # let JS finish rendering
                             loaded = True
                             break
                         except PWTimeout:
