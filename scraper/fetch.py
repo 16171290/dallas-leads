@@ -476,12 +476,12 @@ class ClerkScraper:
                                             wait_until="domcontentloaded")
                             await page.wait_for_load_state("networkidle",
                                                            timeout=25_000)
-                            await asyncio.sleep(3)  # let JS finish rendering
+                            await asyncio.sleep(8)  # let JS finish rendering
                             loaded = True
                             break
                         except PWTimeout:
                             log.warning(f"  Timeout p{page_num} attempt {attempt+1}")
-                            await asyncio.sleep(4)
+                            await asyncio.sleep(8)
 
                     if not loaded:
                         break
@@ -494,8 +494,10 @@ class ClerkScraper:
 
                     # ── HTML fallback ─────────────────────────────────────
                     if not page_items:
-                        html       = await page.content()
-                        page_items = self._parse_html(html, code)
+                        html      = await page.content()
+                    log.info(f"  Page length: {len(html)} chars")
+                    log.info(f"  Snippet: {html[2000:2200]}")
+                    page_recs = self._parse_html(html, code)
 
                     for item in page_items:
                         if isinstance(item, dict) and "doc_num" in item:
