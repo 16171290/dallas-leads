@@ -544,71 +544,26 @@ class ClerkScraper:
         return []
 
     # ── HTML table fallback ───────────────────────────────────────────────────
-
-    def _parse_html(self, html: str, code: str) -> list[dict]:
+def _parse_html(self, html: str, code: str) -> list[dict]:
         records = []
-        soup    = BeautifulSoup(html, "lxml")
-
-        for table in soup.find_all("table"):
-            rows = table.find_all("tr")
-            if len(rows) < 2:
-                continue
-            headers = [c.get_text(strip=True).lower()
-                       for c in rows[0].find_all(["th", "td"])]
-            if not any(kw in " ".join(headers)
-                       for kw in ["doc", "name", "date", "grantor", "party"]):
-                continue
-
-            col: dict[str, int] = {}
-            for i, h in enumerate(headers):
-                if re.search(r"doc.?num|instr|number", h) and "doc_num" not in col:
-                    col["doc_num"] = i
-                if re.search(r"date|filed|record", h) and "filed" not in col:
-                    col["filed"] = i
-                if re.search(r"grantor|name|party", h) and "grantor" not in col:
-                    col["grantor"] = i
-                if re.search(r"grantee", h) and "grantee" not in col:
-                    col["grantee"] = i
-                if re.search(r"legal|desc", h) and "legal" not in col:
-                    col["legal"] = i
-                if re.search(r"amount|consid", h) and "amount" not in col:
-                    col["amount"] = i
-
-            for row in rows[1:]:
-                cells = row.find_all(["td", "th"])
-                if not cells:
-                    continue
-                try:
-                    def ct(key):
-                        idx = col.get(key)
-                        return cells[idx].get_text(strip=True) \
-                            if (idx is not None and idx < len(cells)) else ""
-                    link_tag  = row.find("a", href=True)
-                    clerk_url = ""
-                    if link_tag:
-                        h = link_tag["href"]
-                        clerk_url = urljoin(PORTAL_BASE, h) \
-                            if h.startswith("/") else h
-                    doc_num = ct("doc_num") or \
-                        (link_tag.get_text(strip=True) if link_tag else "")
-                    if not doc_num:
-                        continue
-                    dt        = parse_date(ct("filed"))
-                    filed_iso = dt.strftime("%Y-%m-%d") if dt else ct("filed")
-                    r = blank_record(code)
-                    r.update({
-                        "doc_num":   doc_num.strip(),
-                        "filed":     filed_iso,
-                        "owner":     ct("grantor").strip(),
-                        "grantee":   ct("grantee").strip(),
-                        "amount":    parse_amount(ct("amount")),
-                        "legal":     ct("legal").strip(),
-                        "clerk_url": clerk_url,
-                    })
+        matches = re.findall(r'\{[^{}]*"docNumber"[^{}]*\}', html)
+        for match in matches:
+            try:
+                item = json.loads(match)
+                r = blank_record(code)
+                r.update({
+                    "doc_num":   str(item.get("docNumber") or ""),
+                    "filed":     str(item.get("recordedDate") or item.get("fileDate") or ""),
+                    "owner":     str(item.get("grantor") or ""),
+                    "grantee":   str(item.get("grantee") or ""),
+                    "amount":    parse_amount(item.get("consideration") or ""),
+                    "legal":     str(item.get("legalDescription") or ""),
+                    "clerk_url": f"{PORTAL_BASE}/doc/{item.get('id', '')}",
+                })
+                if r["doc_num"]:
                     records.append(r)
-                except Exception:
-                    pass
-
+            except Exception:
+                pass
         return records
 
 
