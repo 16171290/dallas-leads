@@ -439,7 +439,7 @@ class ClerkScraper:
                         page_items = self._extract_json_from_html(html, code)
 
                     log.info(f"  Items found: {len(page_items)}")
-
+                    log.info(f"  HTML sample: {html[40000:40300]}")
                     for item in page_items:
                         if isinstance(item, dict) and "doc_num" in item:
                             code_records.append(item)
