@@ -500,7 +500,7 @@ class ClerkScraper:
                     if not page_items:
                         html      = await page.content()
                     log.info(f"  Page length: {len(html)} chars")
-                    log.info(f"  Snippet: {html[2000:2200]}")
+                    log.info(f"  Snippet: {html[50000:50300]}")
                     page_recs = self._parse_html(html, code)
 
                     for item in page_items:
