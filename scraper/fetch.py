@@ -261,6 +261,10 @@ class ParcelLookup:
 
     def _download(self) -> Optional[bytes]:
         session = make_requests_session()
+      # Skip CAD download if using proxy - it doesn't support it
+        if proxy_enabled():
+            log.info("Skipping CAD download (proxy mode)")
+            return None
         try:
             resp = session.get(CAD_PAGE, timeout=30)
             resp.raise_for_status()
