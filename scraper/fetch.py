@@ -57,7 +57,7 @@ def proxy_enabled() -> bool:
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
 LOOKBACK_DAYS = 7
-PORTAL_BASE   = "http://dallas.tx.publicsearch.us"
+PORTAL_BASE   = "https://dallas.tx.publicsearch.us"
 CAD_PAGE      = "https://www.dallascad.org/DataProducts.aspx"
 
 DOC_TYPE_MAP: dict[str, tuple[str, str]] = {
