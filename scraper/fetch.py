@@ -2,7 +2,7 @@
 Dallas County, Texas — Motivated Seller Lead Scraper
 =====================================================
 Target portal : https://dallas.tx.publicsearch.us
-Proxy         : Decodo residential rotating proxy
+Rendering     : ScraperAPI (handles JavaScript/React rendering)
 Parcel data   : https://www.dallascad.org/DataProducts.aspx
 Look-back     : Last 7 days
 """
@@ -20,11 +20,10 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin, urlencode
+from urllib.parse import urljoin, urlencode, quote_plus
 
 import requests
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 try:
     from dbfread import DBF
@@ -40,18 +39,39 @@ logging.basicConfig(
 log = logging.getLogger("dallas_scraper")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Decodo proxy config
+# ScraperAPI config
 # ─────────────────────────────────────────────────────────────────────────────
-DECODO_USER = os.environ.get("DECODO_USER", "")
-DECODO_PASS = os.environ.get("DECODO_PASS", "")
-DECODO_HOST = "gate.decodo.com"
-DECODO_PORT = 7000
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "")
+SCRAPERAPI_URL = "https://api.scraperapi.com"
 
-PROXY_URL_AUTH = f"http://{DECODO_USER}:{DECODO_PASS}@{DECODO_HOST}:{DECODO_PORT}"
-PROXY_URL_BARE = f"http://{DECODO_HOST}:{DECODO_PORT}"
+def scraper_enabled() -> bool:
+    return bool(SCRAPERAPI_KEY)
 
-def proxy_enabled() -> bool:
-    return bool(DECODO_USER and DECODO_PASS)
+def scrape_url(target_url: str, render_js: bool = True, retries: int = 3) -> Optional[str]:
+    """
+    Fetch a URL through ScraperAPI with JavaScript rendering.
+    Returns the fully rendered HTML or None on failure.
+    """
+    params = {
+        "api_key":    SCRAPERAPI_KEY,
+        "url":        target_url,
+        "render":     "true" if render_js else "false",
+        "country_code": "us",
+    }
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                SCRAPERAPI_URL,
+                params=params,
+                timeout=120,
+            )
+            if resp.status_code == 200:
+                return resp.text
+            log.warning(f"ScraperAPI status {resp.status_code} (attempt {attempt+1})")
+        except Exception as e:
+            log.warning(f"ScraperAPI error (attempt {attempt+1}): {e}")
+        time.sleep(3 * (attempt + 1))
+    return None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
@@ -159,25 +179,6 @@ def blank_record(code: str) -> dict:
     }
 
 
-def make_requests_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/json,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-    })
-    if proxy_enabled():
-        session.proxies = {
-            "http":  PROXY_URL_AUTH,
-            "https": PROXY_URL_AUTH,
-        }
-        log.info(f"Requests session using Decodo proxy: {DECODO_HOST}:{DECODO_PORT}")
-    return session
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Dallas CAD Parcel Lookup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,10 +189,6 @@ class ParcelLookup:
 
     def build(self):
         log.info("Fetching Dallas CAD parcel data …")
-        if proxy_enabled():
-            log.info("Skipping CAD download (proxy mode)")
-            log.warning("Parcel data unavailable – skipping address enrichment")
-            return
         dbf_bytes = self._download()
         if dbf_bytes:
             self._parse(dbf_bytes)
@@ -209,7 +206,11 @@ class ParcelLookup:
         return {}
 
     def _download(self) -> Optional[bytes]:
-        session = make_requests_session()
+        session = requests.Session()
+        session.headers["User-Agent"] = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+        )
         try:
             resp = session.get(CAD_PAGE, timeout=30)
             resp.raise_for_status()
@@ -310,14 +311,14 @@ class ParcelLookup:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Dallas County Clerk Scraper
+# Dallas County Clerk Scraper — ScraperAPI
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ClerkScraper:
     """
-    Playwright scraper routed through Decodo residential proxy.
-    The portal is a React SPA — results are embedded as JSON in the page.
-    We extract JSON blobs containing 'docNumber' directly from page source.
+    Uses ScraperAPI to fully render the React portal and extract results.
+    ScraperAPI handles JavaScript execution, returning fully rendered HTML.
+    Results are embedded as JSON in the rendered page source.
     """
 
     PER_PAGE  = 50
@@ -328,166 +329,66 @@ class ClerkScraper:
         self.end     = end
         self.records: list[dict] = []
 
-    async def run(self):
-        async with async_playwright() as pw:
-            launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
-            context_kwargs = {
-                "user_agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-                ),
-                "viewport":           {"width": 1280, "height": 900},
-                "locale":             "en-US",
-                "timezone_id":        "America/Chicago",
-                "extra_http_headers": {"Accept-Language": "en-US,en;q=0.9"},
-            }
+    def run(self):
+        from_str = self.start.strftime("%m/%d/%Y")
+        to_str   = self.end.strftime("%m/%d/%Y")
 
-            if proxy_enabled():
-                log.info(f"Playwright using Decodo proxy: {DECODO_HOST}:{DECODO_PORT}")
-                context_kwargs["proxy"] = {
-                    "server":   PROXY_URL_BARE,
-                    "username": DECODO_USER,
-                    "password": DECODO_PASS,
+        for code in ALL_CODES:
+            log.info(f"Searching: {code}")
+            code_records: list[dict] = []
+
+            for page_num in range(1, self.MAX_PAGES + 1):
+                params = {
+                    "category": "OPR",
+                    "dateType": "R",
+                    "fromDate": from_str,
+                    "toDate":   to_str,
+                    "docTypes": code,
+                    "page":     page_num,
+                    "perPage":  self.PER_PAGE,
                 }
-            else:
-                log.warning("No proxy configured")
+                target_url = (
+                    f"{PORTAL_BASE}/results/document/search/advanced"
+                    f"?{urlencode(params)}"
+                )
 
-            browser = await pw.chromium.launch(headless=True, args=launch_args)
-            ctx     = await browser.new_context(**context_kwargs)
-            page    = await ctx.new_page()
+                html = scrape_url(target_url, render_js=True)
+                if not html:
+                    log.warning(f"  No response for {code} p{page_num}")
+                    break
 
-            # Capture JSON API responses
-            captured: list[dict] = []
+                log.info(f"  Page length: {len(html)} chars")
 
-            async def handle_response(response):
-                try:
-                    url = response.url
-                    ct  = response.headers.get("content-type", "")
-                    if "json" in ct and PORTAL_BASE in url:
-                        body = await response.json()
-                        captured.append({"url": url, "body": body})
-                except Exception:
-                    pass
+                # Extract records from rendered HTML
+                page_records = self._extract_records(html, code)
+                log.info(f"  Items found: {len(page_records)}")
+                code_records.extend(page_records)
 
-            page.on("response", handle_response)
+                # Stop if less than a full page
+                if len(page_records) < self.PER_PAGE:
+                    break
 
-            # Load home page
-            log.info("Loading portal home page …")
-            try:
-                await page.goto(PORTAL_BASE, timeout=60_000,
-                                wait_until="domcontentloaded")
-                await page.wait_for_load_state("networkidle", timeout=20_000)
-                for btn in ["Accept", "I Agree", "Continue", "OK", "Close"]:
-                    try:
-                        await page.click(
-                            f'button:has-text("{btn}"), a:has-text("{btn}")',
-                            timeout=2_000)
-                        break
-                    except Exception:
-                        pass
-            except Exception as e:
-                log.warning(f"Home page warning: {e}")
+                time.sleep(1)  # be polite
 
-            from_str = self.start.strftime("%m/%d/%Y")
-            to_str   = self.end.strftime("%m/%d/%Y")
+            log.info(f"  → {len(code_records)} records")
+            self.records.extend(code_records)
 
-            for code in ALL_CODES:
-                log.info(f"Searching: {code}")
-                code_records: list[dict] = []
+        log.info(f"Scrape complete – {len(self.records)} raw records")
 
-                for page_num in range(1, self.MAX_PAGES + 1):
-                    captured.clear()
-                    params = {
-                        "category": "OPR",
-                        "dateType": "R",
-                        "fromDate": from_str,
-                        "toDate":   to_str,
-                        "docTypes": code,
-                        "page":     page_num,
-                        "perPage":  self.PER_PAGE,
-                    }
-                    url = f"{PORTAL_BASE}/results/document/search/advanced?{urlencode(params)}"
-
-                    loaded = False
-                    for attempt in range(3):
-                        try:
-                            await page.goto(url, timeout=60_000,
-                                            wait_until="domcontentloaded")
-                            await page.wait_for_load_state("networkidle",
-                                                           timeout=25_000)
-                            await asyncio.sleep(8)
-                            loaded = True
-                            break
-                        except PWTimeout:
-                            log.warning(f"  Timeout p{page_num} attempt {attempt+1}")
-                            await asyncio.sleep(4)
-
-                    if not loaded:
-                        break
-
-                    html = await page.content()
-                    log.info(f"  Page length: {len(html)} chars")
-
-                    # Try intercepted JSON first
-                    page_items: list[dict] = []
-                    for cap in captured:
-                        items = self._extract_items(cap["body"])
-                        page_items.extend(items)
-
-                    # Fallback: extract JSON blobs from page source
-                    if not page_items:
-                        page_items = self._extract_json_from_html(html, code)
-
-                    log.info(f"  Items found: {len(page_items)}")
-                    log.info(f"  HTML sample: {html[40000:40300]}")
-                    for item in page_items:
-                        if isinstance(item, dict) and "doc_num" in item:
-                            code_records.append(item)
-                        else:
-                            r = self._normalize(item, code)
-                            if r:
-                                code_records.append(r)
-
-                    if len(page_items) < self.PER_PAGE:
-                        break
-
-                log.info(f"  → {len(code_records)} records")
-                self.records.extend(code_records)
-                await asyncio.sleep(1.0)
-
-            await browser.close()
-
-        log.info(f"Playwright complete – {len(self.records)} raw records")
-
-    def _extract_items(self, body) -> list:
-        if isinstance(body, list):
-            return body
-        if isinstance(body, dict):
-            for key in ("results", "data", "documents", "hits",
-                        "records", "items", "content", "rows"):
-                val = body.get(key)
-                if isinstance(val, list) and val:
-                    return val
-            for key in ("search", "response", "payload"):
-                val = body.get(key)
-                if isinstance(val, dict):
-                    for inner in ("results", "data", "documents", "hits"):
-                        v2 = val.get(inner)
-                        if isinstance(v2, list) and v2:
-                            return v2
-        return []
-
-    def _extract_json_from_html(self, html: str, code: str) -> list[dict]:
+    def _extract_records(self, html: str, code: str) -> list[dict]:
         """
-        The React app embeds search results as JSON in the page source.
-        We find all JSON objects containing 'docNumber' and parse them.
-        Also tries to find larger JSON arrays containing result sets.
+        Extract document records from fully rendered HTML.
+        Tries multiple strategies:
+        1. JSON objects with docNumber in page source
+        2. JSON arrays containing results
+        3. HTML table rows
+        4. Rendered div/card elements
         """
         records = []
 
-        # Strategy 1: find individual doc objects
-        # Look for JSON objects with docNumber field
-        pattern = re.compile(r'\{[^{}]{0,2000}"docNumber"[^{}]{0,2000}\}', re.DOTALL)
+        # ── Strategy 1: JSON objects with docNumber ───────────────────────
+        pattern = re.compile(
+            r'\{[^{}]{0,3000}"docNumber"[^{}]{0,3000}\}', re.DOTALL)
         for match in pattern.finditer(html):
             try:
                 item = json.loads(match.group())
@@ -497,53 +398,150 @@ class ClerkScraper:
             except Exception:
                 pass
 
-        # Strategy 2: find larger JSON arrays with results
-        if not records:
-            # Look for arrays that contain objects with docNumber
-            array_pattern = re.compile(r'\[(\{[^[\]]*"docNumber"[^[\]]*\}[,\s]*)+\]', re.DOTALL)
-            for match in array_pattern.finditer(html):
-                try:
-                    items = json.loads(match.group())
-                    for item in items:
+        if records:
+            return records
+
+        # ── Strategy 2: larger JSON blobs ────────────────────────────────
+        # Find JSON arrays or objects that contain multiple results
+        blob_pattern = re.compile(
+            r'"(?:results|documents|records|hits|data)"\s*:\s*(\[.+?\])',
+            re.DOTALL)
+        for match in blob_pattern.finditer(html):
+            try:
+                items = json.loads(match.group(1))
+                for item in items:
+                    if isinstance(item, dict):
                         r = self._normalize(item, code)
                         if r:
                             records.append(r)
+            except Exception:
+                pass
+
+        if records:
+            return records
+
+        # ── Strategy 3: HTML table rows ───────────────────────────────────
+        soup = BeautifulSoup(html, "lxml")
+        for table in soup.find_all("table"):
+            rows = table.find_all("tr")
+            if len(rows) < 2:
+                continue
+            headers = [c.get_text(strip=True).lower()
+                       for c in rows[0].find_all(["th", "td"])]
+            if not any(kw in " ".join(headers)
+                       for kw in ["doc", "name", "date", "grantor", "party"]):
+                continue
+
+            col: dict[str, int] = {}
+            for i, h in enumerate(headers):
+                if re.search(r"doc.?num|instr|number", h) and "doc_num" not in col:
+                    col["doc_num"] = i
+                if re.search(r"date|filed|record", h) and "filed" not in col:
+                    col["filed"] = i
+                if re.search(r"grantor|name|party", h) and "grantor" not in col:
+                    col["grantor"] = i
+                if re.search(r"grantee", h) and "grantee" not in col:
+                    col["grantee"] = i
+                if re.search(r"legal|desc", h) and "legal" not in col:
+                    col["legal"] = i
+                if re.search(r"amount|consid", h) and "amount" not in col:
+                    col["amount"] = i
+
+            for row in rows[1:]:
+                cells = row.find_all(["td", "th"])
+                if not cells:
+                    continue
+                try:
+                    def ct(key):
+                        idx = col.get(key)
+                        return cells[idx].get_text(strip=True) \
+                            if (idx is not None and idx < len(cells)) else ""
+                    link_tag  = row.find("a", href=True)
+                    clerk_url = ""
+                    if link_tag:
+                        h = link_tag["href"]
+                        clerk_url = urljoin(PORTAL_BASE, h) \
+                            if h.startswith("/") else h
+                    doc_num = ct("doc_num") or \
+                        (link_tag.get_text(strip=True) if link_tag else "")
+                    if not doc_num:
+                        continue
+                    dt        = parse_date(ct("filed"))
+                    filed_iso = dt.strftime("%Y-%m-%d") if dt else ct("filed")
+                    r = blank_record(code)
+                    r.update({
+                        "doc_num":   doc_num.strip(),
+                        "filed":     filed_iso,
+                        "owner":     ct("grantor").strip(),
+                        "grantee":   ct("grantee").strip(),
+                        "amount":    parse_amount(ct("amount")),
+                        "legal":     ct("legal").strip(),
+                        "clerk_url": clerk_url,
+                    })
+                    records.append(r)
                 except Exception:
                     pass
 
-        # Strategy 3: extract from __NEXT_DATA__ or window.__STATE__ etc
-        if not records:
-            state_pattern = re.compile(
-                r'(?:__NEXT_DATA__|window\.__STATE__|window\.__data__)[\s]*=[\s]*(\{.+?\});',
-                re.DOTALL)
-            for match in state_pattern.finditer(html):
-                try:
-                    data = json.loads(match.group(1))
-                    items = self._deep_find_docs(data)
-                    for item in items:
-                        r = self._normalize(item, code)
-                        if r:
-                            records.append(r)
-                except Exception:
-                    pass
+        if records:
+            return records
+
+        # ── Strategy 4: rendered div cards ───────────────────────────────
+        cards = (
+            soup.find_all("div", class_=re.compile(
+                r"result|document|record|card|row|item", re.I)) or
+            soup.find_all("li",  class_=re.compile(
+                r"result|document|record|card", re.I))
+        )
+        for card in cards:
+            try:
+                text  = card.get_text(" ", strip=True)
+                link  = card.find("a", href=True)
+                clerk_url = ""
+                if link:
+                    h = link["href"]
+                    clerk_url = urljoin(PORTAL_BASE, h) if h.startswith("/") else h
+
+                doc_match = re.search(
+                    r"(?:doc(?:ument)?[\s#:]*|instr[\w]*[\s#:]*)(\d[\w\-/]+)",
+                    text, re.I)
+                doc_num = doc_match.group(1) if doc_match else (
+                    link.get_text(strip=True) if link else "")
+                if not doc_num:
+                    continue
+
+                date_match = re.search(
+                    r"\b(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})\b", text)
+                filed_raw  = date_match.group(1) if date_match else ""
+                dt         = parse_date(filed_raw)
+                filed_iso  = dt.strftime("%Y-%m-%d") if dt else filed_raw
+
+                grantor_m = re.search(
+                    r"Grantor[:\s]+([A-Z][A-Z\s,\.]+?)(?:\s{2,}|Grantee|$)",
+                    text, re.I)
+                owner = grantor_m.group(1).strip() if grantor_m else ""
+
+                grantee_m = re.search(
+                    r"Grantee[:\s]+([A-Z][A-Z\s,\.]+?)(?:\s{2,}|$)",
+                    text, re.I)
+                grantee = grantee_m.group(1).strip() if grantee_m else ""
+
+                amt_m  = re.search(r"\$[\d,]+(?:\.\d{2})?", text)
+                amount = parse_amount(amt_m.group(0)) if amt_m else None
+
+                r = blank_record(code)
+                r.update({
+                    "doc_num":   doc_num.strip(),
+                    "filed":     filed_iso,
+                    "owner":     owner,
+                    "grantee":   grantee,
+                    "amount":    amount,
+                    "clerk_url": clerk_url,
+                })
+                records.append(r)
+            except Exception:
+                pass
 
         return records
-
-    def _deep_find_docs(self, obj, depth=0) -> list:
-        """Recursively search a JSON structure for objects with docNumber."""
-        if depth > 8:
-            return []
-        results = []
-        if isinstance(obj, dict):
-            if "docNumber" in obj or "instrumentNumber" in obj:
-                results.append(obj)
-            else:
-                for v in obj.values():
-                    results.extend(self._deep_find_docs(v, depth + 1))
-        elif isinstance(obj, list):
-            for item in obj:
-                results.extend(self._deep_find_docs(item, depth + 1))
-        return results
 
     def _normalize(self, item: dict, code: str) -> Optional[dict]:
         try:
@@ -561,7 +559,6 @@ class ClerkScraper:
             dt        = parse_date(filed_raw)
             filed_iso = dt.strftime("%Y-%m-%d") if dt else filed_raw
 
-            # Grantor / owner
             grantor = item.get("grantors") or item.get("grantor") or \
                       item.get("grantorName") or ""
             if isinstance(grantor, list):
@@ -571,7 +568,6 @@ class ClerkScraper:
             else:
                 owner = str(grantor).strip()
 
-            # Grantee
             grantee_raw = item.get("grantees") or item.get("grantee") or \
                           item.get("granteeName") or ""
             if isinstance(grantee_raw, list):
@@ -691,7 +687,7 @@ def write_ghl_csv(records: list[dict], path: Path):
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def main():
+def main():
     now      = datetime.now(timezone.utc)
     end_dt   = now
     start_dt = now - timedelta(days=LOOKBACK_DAYS)
@@ -700,27 +696,29 @@ async def main():
     log.info("  Dallas County TX — Motivated Seller Lead Scraper")
     log.info(f"  Portal  : {PORTAL_BASE}")
     log.info(f"  Range   : {start_dt.date()} → {end_dt.date()}")
-    log.info(f"  Proxy   : {'Decodo ENABLED' if proxy_enabled() else 'DISABLED'}")
+    log.info(f"  Scraper : {'ScraperAPI ENABLED' if scraper_enabled() else 'DISABLED – set SCRAPERAPI_KEY'}")
     log.info("=" * 65)
 
-    # Proxy test
-    if proxy_enabled():
-        try:
-            test = requests.get(
-                "https://ip.decodo.com/json",
-                proxies={"http": PROXY_URL_AUTH, "https": PROXY_URL_AUTH},
-                timeout=30)
-            log.info(f"Proxy test: {test.text[:120]}")
-        except Exception as e:
-            log.warning(f"Proxy test failed: {e}")
+    if not scraper_enabled():
+        log.error("SCRAPERAPI_KEY not set – cannot scrape. Exiting.")
+        sys.exit(1)
+
+    # Test ScraperAPI connection
+    log.info("Testing ScraperAPI …")
+    test = scrape_url("https://httpbin.org/ip", render_js=False)
+    if test:
+        log.info(f"ScraperAPI test OK: {test[:80]}")
+    else:
+        log.error("ScraperAPI test failed – check your API key")
+        sys.exit(1)
 
     # 1. Parcel index
     parcel = ParcelLookup()
     parcel.build()
 
-    # 2. Playwright scrape
+    # 2. Scrape clerk portal
     clerk = ClerkScraper(start_dt, end_dt)
-    await clerk.run()
+    clerk.run()
     records = clerk.records
 
     log.info(f"Raw total : {len(records)}")
@@ -775,4 +773,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
