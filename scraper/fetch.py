@@ -266,7 +266,10 @@ class DCADParser:
         try:
             with zipfile.ZipFile(io.BytesIO(self.zip_bytes)) as zf:
                 names = [n.lower() for n in zf.namelist()]
-                log.info(f"ZIP contains {len(names)} files:# Show all column names from account_info.csv
+                log.info(f"ZIP contains {len(names)} files: {names[:10]}")
+                rows_sample = self._get_file(zf, "account_info")
+                if rows_sample:
+                    log.info(f"Account columns: {list(rows_sample[0].keys())[:20]}")
                 rows_sample = self._get_file(zf, "account_info")
                 if rows_sample:
                     log.info(f"Account columns: {list(rows_sample[0].keys())[:20]}") {names[:10]}")
