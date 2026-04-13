@@ -390,42 +390,28 @@ class DCADParser:
                     continue
 
                 # Owner name
-                owner = g(row, "OWNER_NAME", "OWNER1", "OWN_NAME", "NAME",
-                          "OWNR_NAME", "OWNER", "GEO_ID").title()
+                owner = g(row, "OWNER_NAME1", "OWNER_NAME", "BIZ_NAME", "OWNER1").title()
 
                 # Property address — try combined field first, then parts
                 prop_address = g(row, "SITUS_ADDRESS", "SITE_ADDRESS",
                                  "PROP_ADDRESS", "SITUS_ADDR")
-                if not prop_address:
-                    parts = [
-                        g(row, "SITUS_NUM", "PROP_NUM", "STREET_NUM", "STR_NUM"),
-                        g(row, "SITUS_DIR", "PROP_DIR", "STREET_DIR"),
-                        g(row, "SITUS_STREET", "PROP_STREET", "STREET_NAME",
-                          "STR_NAME", "SITUS_STR"),
-                        g(row, "SITUS_SUFFIX", "STREET_SUFFIX", "STR_SFX"),
-                        g(row, "SITUS_UNIT", "UNIT_NUM", "APT"),
-                    ]
-                    prop_address = " ".join(p for p in parts if p).title()
+                parts = [
+    g(row, "STREET_NUM", "STREET_HALF_NUM"),
+    g(row, "FULL_STREET_NAME"),
+    g(row, "BLDG_ID"),
+    g(row, "UNIT_ID"),
+]
+prop_address = " ".join(p for p in parts if p).title()
+prop_city = g(row, "PROPERTY_CITY").title()
+prop_zip  = g(row, "PROPERTY_ZIPCODE")
 
-                prop_city = g(row, "SITUS_CITY", "PROP_CITY", "CITY",
-                              "SITE_CITY", "GEO_CITY").title()
-                prop_zip  = g(row, "SITUS_ZIP", "PROP_ZIP", "ZIP",
-                              "SITE_ZIP", "GEO_ZIP")
-
-                # Mailing address
-                mail_addr  = g(row, "MAIL_ADDR1", "MAIL_ADD1", "MAIL_LINE1",
-                               "MAILING_ADDR", "MAIL_ADDRESS",
-                               "ADDR1", "ADDRESS1").title()
-                mail_addr2 = g(row, "MAIL_ADDR2", "MAIL_ADD2", "MAIL_LINE2",
-                               "ADDR2", "ADDRESS2").title()
-                if mail_addr2:
-                    mail_addr = f"{mail_addr} {mail_addr2}".strip()
-                mail_city  = g(row, "MAIL_CITY", "MAILCITY", "MAIL_CTY",
-                               "CITY2").title()
-                mail_state = g(row, "MAIL_STATE", "MAILSTATE", "MAIL_ST",
-                               "STATE2").upper()
-                mail_zip   = g(row, "MAIL_ZIP", "MAILZIP", "MAIL_ZIPCODE",
-                               "ZIP2")
+                mail_addr  = g(row, "OWNER_ADDRESS_LINE1").title()
+mail_addr2 = g(row, "OWNER_ADDRESS_LINE2", "OWNER_ADDRESS_LINE3").title()
+if mail_addr2:
+    mail_addr = f"{mail_addr} {mail_addr2}".strip()
+mail_city  = g(row, "OWNER_CITY").title()
+mail_state = g(row, "OWNER_STATE").upper()
+mail_zip   = g(row, "OWNER_ZIPCODE")
 
                 # Values
                 val_data  = self._values.get(acct, {})
@@ -617,7 +603,7 @@ def main():
         score_record(r)
 
     # 4. Filter to motivated sellers (score > 30 = at least one real flag)
-    motivated = [r for r in records if r["score"] > 30]
+    motivated = [r for r in records if r["score"] > 20]
     log.info(f"Motivated seller leads: {len(motivated):,} of {len(records):,}")
 
     # Sort by score
