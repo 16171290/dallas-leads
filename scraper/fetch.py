@@ -734,8 +734,9 @@ def main():
             "end":   now.strftime("%Y-%m-%d"),
         },
         "total":        len(clean),
+        "showing":      min(len(clean), 5000),
         "with_address": with_addr,
-        "records":      clean,
+        "records":      clean[:5000],
     }
 
     for out in (DASHBOARD_JSON, DATA_JSON):
