@@ -35,7 +35,6 @@ jobs:
         run: python scraper/fetch.py
         env:
           PYTHONUNBUFFERED: "1"
-          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
 
       - name: Commit updated records
         run: |
