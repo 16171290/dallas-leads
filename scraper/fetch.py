@@ -4,13 +4,18 @@ Dallas County, Texas — Motivated Seller Lead Scraper
 Source  : Dallas Central Appraisal District (DCAD)
           https://www.dallascad.org/DataProducts.aspx
 Data    : 2026 Current Ownership + Residential Property Data
+
+Known column names from account_info.csv:
+  ACCOUNT_NUM, APPRAISAL_YR, OWNER_NAME1, OWNER_NAME2, BIZ_NAME
+  OWNER_ADDRESS_LINE1/2/3/4, OWNER_CITY, OWNER_STATE, OWNER_ZIPCODE
+  STREET_NUM, STREET_HALF_NUM, FULL_STREET_NAME, BLDG_ID, UNIT_ID
+  PROPERTY_CITY, PROPERTY_ZIPCODE, LEGAL1-5, DEED_TXFR_DATE
 """
 
 import csv
 import io
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -39,8 +44,8 @@ log = logging.getLogger("dcad_scraper")
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
-CAD_BASE = "https://www.dallascad.org"
-CAD_PAGE = "https://www.dallascad.org/DataProducts.aspx"
+CAD_BASE     = "https://www.dallascad.org"
+CAD_PAGE     = "https://www.dallascad.org/DataProducts.aspx"
 CAD_2026_URL = (
     "https://www.dallascad.org/ViewPDFs.aspx?type=3&id="
     "\\\\DCAD.ORG\\WEB\\WEBDATA\\WEBFORMS\\DATA PRODUCTS\\DCAD2026_CURRENT.ZIP"
@@ -78,7 +83,7 @@ FLAG_DEFS = [
         not r.get("_has_homestead", False) and
         (r.get("_appraised_value") or 0) > 100_000)),
     ("Out of state owner",    10, lambda r: (
-        r.get("mail_state", "").upper() not in ("TX", "TEXAS", "", None))),
+        r.get("mail_state", "").upper() not in ("TX", "TEXAS", ""))),
     ("High value property",    5, lambda r: (r.get("_appraised_value") or 0) > 300_000),
     ("Value drop",            10, lambda r: r.get("_value_dropped", False)),
 ]
@@ -107,6 +112,7 @@ def safe_float(val) -> Optional[float]:
 
 
 def g(row: dict, *keys) -> str:
+    """Get first non-empty value from a dict trying multiple key variants."""
     for k in keys:
         for variant in (k, k.upper(), k.lower()):
             v = row.get(variant)
@@ -122,6 +128,7 @@ def g(row: dict, *keys) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DCADDownloader:
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
@@ -141,10 +148,10 @@ class DCADDownloader:
                 log.info(f"Using cached DCAD data from {today}")
                 return CACHE_ZIP.read_bytes()
 
-        log.info("Downloading DCAD 2026 current data …")
+        log.info("Downloading DCAD 2026 current data ...")
 
         for url in self._get_urls():
-            log.info(f"Trying: {url[:80]} …")
+            log.info(f"Trying: {url[:80]} ...")
             for attempt in range(3):
                 try:
                     resp = self.session.get(url, timeout=180, stream=True)
@@ -163,7 +170,7 @@ class DCADDownloader:
         log.error("Could not download DCAD data")
         return None
 
-    def _get_urls(self) -> list[str]:
+    def _get_urls(self) -> list:
         urls = []
         try:
             resp = self.session.get(CAD_PAGE, timeout=30)
@@ -176,7 +183,6 @@ class DCADDownloader:
                     break
         except Exception as e:
             log.warning(f"Page parse error: {e}")
-
         urls.append(CAD_2026_URL)
         urls.append(
             "https://www.dallascad.org/webforms/DATA%20PRODUCTS/DCAD2026_CURRENT.ZIP"
@@ -189,28 +195,24 @@ class DCADDownloader:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DCADParser:
+
     RESIDENTIAL_CODES = {"A", "B", "C", "D", "E"}
 
     def __init__(self, zip_bytes: bytes):
         self.zip_bytes        = zip_bytes
-        self.records:         list[dict]      = []
-        self._res_accounts:   set[str]        = set()
-        self._values:         dict[str, dict] = {}
-        self._exemptions:     dict[str, dict] = {}
-        self._tax_delinquent: set[str]        = set()
-        self._res_details:    dict[str, dict] = {}
+        self.records          = []
+        self._res_accounts    = set()
+        self._values          = {}
+        self._exemptions      = {}
+        self._tax_delinquent  = set()
+        self._res_details     = {}
 
-    def parse(self) -> list[dict]:
-        log.info("Parsing DCAD ZIP …")
+    def parse(self) -> list:
+        log.info("Parsing DCAD ZIP ...")
         try:
             with zipfile.ZipFile(io.BytesIO(self.zip_bytes)) as zf:
                 names = [n.lower() for n in zf.namelist()]
                 log.info(f"ZIP contains {len(names)} files: {names[:10]}")
-
-                # Show columns for debugging
-                rows_sample = self._get_file(zf, "account_info")
-                if rows_sample:
-                    log.info(f"account_info columns: {list(rows_sample[0].keys())[:30]}")
 
                 self._load_residential_accounts(zf)
                 self._load_values(zf)
@@ -227,7 +229,7 @@ class DCADParser:
         log.info(f"Parsed {len(self.records):,} residential records")
         return self.records
 
-    def _get_file(self, zf: zipfile.ZipFile, *patterns) -> Optional[list[dict]]:
+    def _get_file(self, zf, *patterns) -> Optional[list]:
         for pattern in patterns:
             for zname in zf.namelist():
                 if pattern.lower() in zname.lower():
@@ -242,21 +244,23 @@ class DCADParser:
                         log.debug(f"Could not read {zname}: {e}")
         return None
 
-    def _parse_csv(self, content: bytes) -> list[dict]:
+    def _parse_csv(self, content: bytes) -> list:
         rows = []
         for encoding in ("utf-8", "latin-1", "cp1252"):
             try:
                 text   = content.decode(encoding)
                 reader = csv.DictReader(io.StringIO(text))
                 for row in reader:
-                    rows.append({k.strip().upper(): (v or "").strip()
-                                  for k, v in row.items() if k})
+                    rows.append({
+                        k.strip().upper(): (v or "").strip()
+                        for k, v in row.items() if k
+                    })
                 return rows
             except Exception:
                 pass
         return rows
 
-    def _parse_dbf(self, content: bytes, name: str) -> list[dict]:
+    def _parse_dbf(self, content: bytes, name: str) -> list:
         tmp  = Path(f"/tmp/_dcad_{name.split('/')[-1]}")
         rows = []
         tmp.write_bytes(content)
@@ -264,8 +268,10 @@ class DCADParser:
             tbl = DBF(str(tmp), lowernames=False,
                       ignore_missing_memofile=True, encoding="latin-1")
             for row in tbl:
-                rows.append({k.strip().upper(): str(v).strip() if v else ""
-                              for k, v in row.items()})
+                rows.append({
+                    k.strip().upper(): str(v).strip() if v else ""
+                    for k, v in row.items()
+                })
         except Exception as e:
             log.debug(f"DBF error: {e}")
         finally:
@@ -273,67 +279,58 @@ class DCADParser:
         return rows
 
     def _load_residential_accounts(self, zf):
-        rows = self._get_file(zf, "residential", "res_")
+        rows = self._get_file(zf, "residential", "res_detail")
         if rows:
             for row in rows:
-                acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT", "prop_id")
+                acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT")
                 if acct:
                     self._res_accounts.add(acct)
-            log.info(f"Residential accounts: {len(self._res_accounts):,}")
-
-        rows2 = self._get_file(zf, "account_info", "account")
-        if rows2:
-            for row in rows2:
-                state_cd = g(row, "STATE_CD", "STATECODE", "PROP_TYPE",
-                             "PROPERTY_TYPE", "CAT_CD", "CATEGORY", "SPTD_CODE")
-                acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT", "prop_id")
-                if acct and state_cd and state_cd.upper()[:1] in self.RESIDENTIAL_CODES:
-                    self._res_accounts.add(acct)
+            log.info(f"Residential accounts loaded: {len(self._res_accounts):,}")
 
     def _load_values(self, zf):
-        rows = self._get_file(zf, "value", "appval", "appr_val", "account_apprl")
+        rows = self._get_file(zf, "account_apprl_year", "value", "appval")
         if not rows:
             return
         for row in rows:
-            acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT", "prop_id")
+            acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT")
             if acct:
                 self._values[acct] = {
                     "appraised": safe_float(g(row, "APPRAISED_VAL", "APPR_VAL",
-                                              "TOTAL_VAL", "MARKET_VAL", "MKT_VAL",
-                                              "APPRAISED", "TOT_VAL")),
+                                              "TOTAL_VAL", "MARKET_VAL", "TOT_VAL",
+                                              "APPRAISED")),
                     "land":      safe_float(g(row, "LAND_VAL", "LAND_VALUE", "LAND")),
                     "impr":      safe_float(g(row, "IMPR_VAL", "IMPROVEMENT_VAL",
                                               "IMP_VAL", "IMPR")),
-                    "prior_val": safe_float(g(row, "PRIOR_VAL", "PREV_VAL", "LAST_VAL")),
+                    "prior_val": safe_float(g(row, "PRIOR_VAL", "PREV_VAL",
+                                              "LAST_VAL")),
                 }
         log.info(f"Value records: {len(self._values):,}")
 
     def _load_exemptions(self, zf):
-        rows = self._get_file(zf, "applied_std_exempt", "exemption", "exempt",
-                              "acct_exempt")
+        rows = self._get_file(zf, "applied_std_exempt", "acct_exempt",
+                              "exemption", "exempt")
         if not rows:
             return
         for row in rows:
-            acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT", "prop_id")
+            acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT")
             ex   = g(row, "EXEMPTION_CD", "EXEMPT_CD", "EX_CD", "CODE",
                      "EXEMPT_TYPE", "EXEMPTION_TYPE").upper()
             if acct:
                 if acct not in self._exemptions:
-                    self._exemptions[acct] = {"codes": set(), "has_homestead": False}
-                self._exemptions[acct]["codes"].add(ex)
+                    self._exemptions[acct] = {"has_homestead": False}
                 if ex in ("HS", "OV65", "DP", "HOMESTEAD", "OV65S"):
                     self._exemptions[acct]["has_homestead"] = True
         log.info(f"Exemption records: {len(self._exemptions):,}")
 
     def _load_tax_status(self, zf):
-        rows = self._get_file(zf, "taxunit", "tax_unit", "taxdue", "delinq",
-                              "account_tif")
+        rows = self._get_file(zf, "account_tif", "taxunit", "tax_unit",
+                              "taxdue", "delinq")
         if not rows:
             return
         for row in rows:
-            acct   = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT", "prop_id")
+            acct   = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT")
             delinq = g(row, "DELINQUENT", "DELINQ", "DELINQ_YR",
-                       "PRIOR_YR_TAX", "PRIOR_YR").upper()
+                       "PRIOR_YR_TAX").upper()
             status = g(row, "STATUS", "TAX_STATUS", "SUIT_STATUS").upper()
             if acct and (
                 delinq not in ("", "0", "N", "NO", "NONE") or
@@ -347,91 +344,79 @@ class DCADParser:
         if not rows:
             return
         for row in rows:
-            acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT", "prop_id")
+            acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT")
             if acct:
                 self._res_details[acct] = {
-                    "year_built": g(row, "YEAR_BUILT", "YR_BUILT", "BUILT",
-                                    "ACT_YR_BLT"),
+                    "year_built": g(row, "YEAR_BUILT", "YR_BUILT", "ACT_YR_BLT"),
                     "sqft":       g(row, "BLDG_SQFT", "SQFT", "LIVING_AREA",
                                     "TOTAL_SQFT", "LVG_AREA"),
-                    "bedrooms":   g(row, "BEDROOMS", "BED", "BED_RM", "NO_BED"),
-                    "bathrooms":  g(row, "BATHROOMS", "BATH", "FULL_BATH", "NO_BATH"),
-                    "stories":    g(row, "STORIES", "STORY", "NUM_STORIES", "NO_STORY"),
-                    "garage":     g(row, "GARAGE", "GAR_SPACES", "GARAGE_CAP",
-                                    "GAR_CD"),
+                    "bedrooms":   g(row, "BEDROOMS", "BED", "NO_BED"),
+                    "bathrooms":  g(row, "BATHROOMS", "BATH", "NO_BATH"),
+                    "stories":    g(row, "STORIES", "STORY", "NO_STORY"),
+                    "garage":     g(row, "GARAGE", "GAR_SPACES", "GAR_CD"),
                     "pool":       g(row, "POOL", "HAS_POOL", "POOL_CD"),
                 }
         log.info(f"Residential detail records: {len(self._res_details):,}")
 
     def _parse_accounts(self, zf):
-        rows = self._get_file(zf, "account_info", "account", "acct", "owner")
+        rows = self._get_file(zf, "account_info")
         if not rows:
-            log.error("Could not find main account file!")
+            log.error("Could not find account_info.csv!")
             return
 
-        log.info(f"Processing {len(rows):,} account rows …")
+        log.info(f"Processing {len(rows):,} account rows ...")
         processed = 0
 
         for row in rows:
             try:
-                acct = g(row, "ACCOUNT_NUM", "ACCT_NUM", "ACCOUNT", "ACCT",
-                         "prop_id", "PROP_ID")
+                acct = g(row, "ACCOUNT_NUM")
                 if not acct:
                     continue
 
-                state_cd = g(row, "STATE_CD", "STATECODE", "CAT_CD",
-                             "CATEGORY", "PROP_TYPE", "SPTD_CODE").upper()
-
-                is_residential = (
-                    acct in self._res_accounts or
-                    (state_cd and state_cd[:1] in self.RESIDENTIAL_CODES)
-                )
+                # Only include residential accounts
+                is_residential = acct in self._res_accounts
                 if not is_residential:
                     continue
 
                 # Owner name
-                owner = g(row, "OWNER_NAME1", "OWNER_NAME", "BIZ_NAME", "OWNER1").title()
+                owner = (g(row, "OWNER_NAME1") or g(row, "BIZ_NAME")).title()
 
-                # Property address — try combined field first, then parts
-                prop_address = g(row, "SITUS_ADDRESS", "SITE_ADDRESS",
-                                 "PROP_ADDRESS", "SITUS_ADDR")
-                parts = [
-    g(row, "STREET_NUM", "STREET_HALF_NUM"),
-    g(row, "FULL_STREET_NAME"),
-    g(row, "BLDG_ID"),
-    g(row, "UNIT_ID"),
-]
-prop_address = " ".join(p for p in parts if p).title()
-prop_city = g(row, "PROPERTY_CITY").title()
-prop_zip  = g(row, "PROPERTY_ZIPCODE")
+                # Property address using known column names
+                street_num  = g(row, "STREET_NUM", "STREET_HALF_NUM")
+                street_name = g(row, "FULL_STREET_NAME")
+                bldg        = g(row, "BLDG_ID")
+                unit        = g(row, "UNIT_ID")
 
-                mail_addr  = g(row, "OWNER_ADDRESS_LINE1").title()
-mail_addr2 = g(row, "OWNER_ADDRESS_LINE2", "OWNER_ADDRESS_LINE3").title()
-if mail_addr2:
-    mail_addr = f"{mail_addr} {mail_addr2}".strip()
-mail_city  = g(row, "OWNER_CITY").title()
-mail_state = g(row, "OWNER_STATE").upper()
-mail_zip   = g(row, "OWNER_ZIPCODE")
+                addr_parts = [p for p in [street_num, street_name, bldg, unit] if p]
+                prop_address = " ".join(addr_parts).title()
+                prop_city    = g(row, "PROPERTY_CITY").title()
+                prop_zip     = g(row, "PROPERTY_ZIPCODE")
+
+                # Mailing address using known column names
+                mail_line1 = g(row, "OWNER_ADDRESS_LINE1").title()
+                mail_line2 = g(row, "OWNER_ADDRESS_LINE2").title()
+                mail_addr  = (mail_line1 + " " + mail_line2).strip() if mail_line2 else mail_line1
+                mail_city  = g(row, "OWNER_CITY").title()
+                mail_state = g(row, "OWNER_STATE").upper()
+                mail_zip   = g(row, "OWNER_ZIPCODE")
+
+                # Legal description
+                legal_parts = [g(row, f"LEGAL{i}") for i in range(1, 6)]
+                legal = " ".join(p for p in legal_parts if p)
 
                 # Values
                 val_data  = self._values.get(acct, {})
-                appraised = val_data.get("appraised") or safe_float(
-                    g(row, "APPRAISED_VAL", "APPR_VAL", "TOTAL_VAL",
-                      "MARKET_VAL", "MKT_VAL", "TOT_VAL"))
+                appraised = val_data.get("appraised")
                 prior_val = val_data.get("prior_val")
 
                 # Exemptions
                 ex_data       = self._exemptions.get(acct, {})
                 has_homestead = ex_data.get("has_homestead", False)
-                ex_code       = g(row, "HOMESTEAD", "HS_FLAG", "HS_CAP",
-                                  "EXEMPTIONS").upper()
-                if ex_code in ("Y", "YES", "1", "HS"):
-                    has_homestead = True
 
                 # Residential details
                 res = self._res_details.get(acct, {})
 
-                # Internal scoring flags
+                # Scoring flags
                 tax_delinquent    = acct in self._tax_delinquent
                 value_dropped     = (
                     appraised is not None and prior_val is not None and
@@ -451,8 +436,7 @@ mail_zip   = g(row, "OWNER_ZIPCODE")
                     "owner":           owner,
                     "grantee":         "",
                     "amount":          appraised,
-                    "legal":           g(row, "LEGAL_DESC", "LEGAL",
-                                         "LEGAL_DESCRIPTION", "GEO_DESCRIPTION"),
+                    "legal":           legal,
                     "clerk_url":       f"https://www.dallascad.org/AcctDetailRes.aspx?crypt={acct}",
                     "prop_address":    prop_address,
                     "prop_city":       prop_city or "Dallas",
@@ -472,7 +456,6 @@ mail_zip   = g(row, "OWNER_ZIPCODE")
                     "appraised_value": appraised,
                     "land_value":      val_data.get("land"),
                     "impr_value":      val_data.get("impr"),
-                    "state_cd":        state_cd,
                     "_tax_delinquent":    tax_delinquent,
                     "_has_homestead":     has_homestead,
                     "_homestead_removed": homestead_removed,
@@ -485,7 +468,7 @@ mail_zip   = g(row, "OWNER_ZIPCODE")
                 self.records.append(record)
                 processed += 1
                 if processed % 50_000 == 0:
-                    log.info(f"  Processed {processed:,} residential records …")
+                    log.info(f"  Processed {processed:,} residential records ...")
 
             except Exception as exc:
                 log.debug(f"Row error: {exc}")
@@ -534,7 +517,7 @@ GHL_FIELDS = [
 ]
 
 
-def write_ghl_csv(records: list[dict], path: Path):
+def write_ghl_csv(records: list, path: Path):
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=GHL_FIELDS, extrasaction="ignore")
         w.writeheader()
@@ -567,7 +550,7 @@ def write_ghl_csv(records: list[dict], path: Path):
                 "Source":                 "Dallas CAD (dallascad.org)",
                 "Public Records URL":     r.get("clerk_url", ""),
             })
-    log.info(f"GHL CSV → {path}  ({len(records)} rows)")
+    log.info(f"GHL CSV written: {path}  ({len(records)} rows)")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -598,24 +581,26 @@ def main():
         sys.exit(1)
 
     # 3. Score
-    log.info("Scoring records …")
+    log.info("Scoring records ...")
     for r in records:
         score_record(r)
 
-    # 4. Filter to motivated sellers (score > 30 = at least one real flag)
+    # 4. Filter — score > 20 means at least one flag triggered
     motivated = [r for r in records if r["score"] > 20]
     log.info(f"Motivated seller leads: {len(motivated):,} of {len(records):,}")
 
-    # Sort by score
+    # Sort by score descending
     motivated.sort(key=lambda x: x["score"], reverse=True)
 
-    # 5. Clean internal keys
+    # 5. Remove internal keys
     clean = []
     for r in motivated:
         clean.append({k: v for k, v in r.items() if not k.startswith("_")})
 
     # 6. Write JSON (top 5000)
-    with_addr = sum(1 for r in clean if r.get("prop_address") or r.get("mail_address"))
+    with_addr = sum(
+        1 for r in clean if r.get("prop_address") or r.get("mail_address")
+    )
     payload = {
         "fetched_at": now.isoformat(),
         "source":     "Dallas Central Appraisal District (dallascad.org)",
@@ -631,7 +616,7 @@ def main():
     for out in (DASHBOARD_JSON, DATA_JSON):
         out.write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8")
-        log.info(f"JSON → {out}")
+        log.info(f"JSON written: {out}")
 
     # 7. GHL CSV (top 10,000)
     write_ghl_csv(clean[:10_000], GHL_CSV)
@@ -641,7 +626,7 @@ def main():
     log.info(f"  Done. {len(clean):,} leads | {with_addr:,} with address")
     log.info(f"  Top score: {clean[0]['score'] if clean else 0}")
     log.info("  Flag breakdown:")
-    flag_counts: dict[str, int] = {}
+    flag_counts: dict = {}
     for r in clean:
         for f in r.get("flags", []):
             flag_counts[f] = flag_counts.get(f, 0) + 1
