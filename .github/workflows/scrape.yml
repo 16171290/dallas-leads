@@ -29,21 +29,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 lxml dbfread playwright
-
-      - name: Install Playwright Chromium
-        run: python -m playwright install --with-deps chromium
-
-      - name: Test Decodo proxy
-        run: curl -x http://${{ secrets.DECODO_USER }}:${{ secrets.DECODO_PASS }}@gate.decodo.com:7000 https://ip.decodo.com
-        continue-on-error: true
+          pip install requests beautifulsoup4 lxml dbfread
 
       - name: Run scraper
         run: python scraper/fetch.py
         env:
           PYTHONUNBUFFERED: "1"
-          DECODO_USER: ${{ secrets.DECODO_USER }}
-          DECODO_PASS: ${{ secrets.DECODO_PASS }}
+          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
 
       - name: Commit updated records
         run: |
