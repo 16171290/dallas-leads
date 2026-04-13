@@ -82,7 +82,9 @@ FLAG_DEFS = [
         r'\b(LLC|INC|CORP|LP\b|LTD|TRUST|HOLDING|INVESTMENT|PROPERTIES|VENTURES)\b',
         (r.get("owner") or ""), re.I))),
     ("Homestead removed",     15, lambda r: r.get("_homestead_removed", False)),
-    ("Vacant / no homestead", 10, lambda r: not r.get("_has_homestead", False)),
+    ("Vacant / no homestead", 10, lambda r: (
+    not r.get("_has_homestead", False) and
+    r.get("_appraised_value", 0) > 100_000)),
     ("Out of state owner",    10, lambda r: (
         r.get("mail_state", "").upper() not in ("TX", "TEXAS", "", None))),
     ("High value property",    5, lambda r: (r.get("_appraised_value") or 0) > 300_000),
@@ -264,7 +266,10 @@ class DCADParser:
         try:
             with zipfile.ZipFile(io.BytesIO(self.zip_bytes)) as zf:
                 names = [n.lower() for n in zf.namelist()]
-                log.info(f"ZIP contains {len(names)} files: {names[:10]}")
+                log.info(f"ZIP contains {len(names)} files:# Show all column names from account_info.csv
+                rows_sample = self._get_file(zf, "account_info")
+                if rows_sample:
+                    log.info(f"Account columns: {list(rows_sample[0].keys())[:20]}") {names[:10]}")
 
                 # Build supporting lookups first
                 self._load_residential_accounts(zf)
@@ -712,7 +717,7 @@ def main():
         score_record(r)
 
     # 4. Filter to motivated sellers only (score > 20 = has at least one flag)
-    motivated = [r for r in records if r["score"] > 20]
+    motivated = [r for r in records if r["score"] > 30]
     log.info(f"Motivated seller leads: {len(motivated):,} of {len(records):,}")
 
     # Sort by score descending
